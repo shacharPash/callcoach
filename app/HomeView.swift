@@ -114,6 +114,7 @@ struct HomeView: View {
         hasMic = Permissions.hasMicrophone
     }
 
+    /// "פתח את הפאנל" works only in a call; with none the card says so and the button is off.
     private var liveCard: some View {
         let m = state.model
         return HStack(spacing: 10) {
@@ -123,7 +124,7 @@ struct HomeView: View {
                 .foregroundStyle(state.inCall ? Color.primary : Color.secondary)
                 .monospacedDigit()
             Spacer()
-            Button(Self.openPanelTitle) { actions.bringPanel() }
+            Button(Self.openPanelTitle) { actions.bringPanel() }.disabled(!state.inCall)
             if state.inCall {
                 Button(Self.stopTitle) { state.stop() }.disabled(m.phase != .active)
             }

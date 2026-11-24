@@ -116,7 +116,7 @@ final class PanelController: NSObject {
     static let leastWidth: CGFloat = 300
     static let sizeKey = "panel.size"
     static let placeKey = "panel.topLeft"
-    let panel: CoachPanel
+    private(set) var panel: CoachPanel
     private let state: AppState
     private let addContext: () -> Void
     private var host: ClickHostingView<Localized<PanelView>>!
@@ -140,19 +140,8 @@ final class PanelController: NSObject {
         self.addContext = addContext
         let saved = UserDefaults.standard.string(forKey: Self.sizeKey).map(NSSizeFromString) ?? .zero
         size = NSSize(width: Self.startWidth(saved: saved.width), height: max(0, saved.height).rounded(.down))
-        panel = CoachPanel(contentRect: NSRect(x: 0, y: 0, width: size.width, height: 200),
-                           styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
+        panel = Self.makePanel(width: size.width)
         super.init()
-        panel.level = .statusBar
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = false
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.isMovableByWindowBackground = false
-        panel.sharingType = WindowHost.sharing
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
         host = ClickHostingView(rootView: view())
         panel.contentView = host
         changes = state.objectWillChange.merge(with: LanguageStore.shared.objectWillChange)
@@ -169,16 +158,50 @@ final class PanelController: NSObject {
         saved > 0 ? max(leastWidth, saved).rounded(.down) : width
     }
 
-    /// A place on a screen that is gone gives way to the default one.
+    /// The panel's window: on every Space, full-screen apps included, over other windows, never taking the keyboard.
+    static func makePanel(width: CGFloat) -> CoachPanel {
+        let panel = CoachPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: 200),
+                               styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.isMovableByWindowBackground = false
+        panel.sharingType = WindowHost.sharing
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        return panel
+    }
+
+    /// A place on a screen that is gone gives way to the default one. Each show is in a new window: macOS can leave a
+    /// window on one Space only (as when it moves it off a screen that went away), and then it never shows on the
+    /// others, full-screen apps included; a new window is on every Space.
     func show() {
         guard !panel.isVisible else { return }
+        renew()
         if !reachable(home) { place() }
         fit()
         panel.orderFrontRegardless()
     }
 
-    /// Moves the panel to the top right of the screen the mouse is on and keeps that place like a dragged one. It ends
-    /// Fill screen. The caller shows the panel when it is hidden.
+    /// A new window in place of this one, with the same content, frame and visibility.
+    private func renew() {
+        let old = panel
+        let next = Self.makePanel(width: old.frame.width)
+        old.contentView = nil
+        next.contentView = host
+        next.setFrame(old.frame, display: false)
+        panel = next
+        if old.isVisible {
+            old.orderOut(nil)
+            next.orderFrontRegardless()
+        }
+    }
+
+    /// Moves the panel to the top right of the screen the mouse is on and keeps that place like a dragged one, in a new
+    /// window, so it shows on the Space in front. It ends Fill screen. The caller shows the panel when it is hidden.
     func bringHere() {
         let screens = NSScreen.screens.map { (frame: $0.frame, visible: $0.visibleFrame) }
         if let before = beforeFill {
@@ -188,11 +211,18 @@ final class PanelController: NSObject {
         guard let place = PanelLayout.here(mouse: NSEvent.mouseLocation, screens: screens, width: size.width) else { return }
         home = place
         saveHome()
-        if panel.isVisible { fit() } else { panel.setFrameTopLeftPoint(home) }
+        if panel.isVisible {
+            renew()
+            fit()
+        } else {
+            panel.setFrameTopLeftPoint(home)
+        }
     }
 
-    /// Screens were added or removed: a place on none of them gives way to the saved or the default one.
+    /// Screens were added or removed: a place on none of them gives way to the saved or the default one, and the
+    /// window is made again, so it stays on every Space of the screens there are now.
     private func screensChanged() {
+        renew()
         if !reachable(home) {
             if let before = beforeFill {
                 beforeFill = nil
@@ -416,6 +446,10 @@ extension SelfCheck {
 
     static func panelChecks(_ root: URL) -> [String] {
         var p: [String] = []
+        let made = PanelController.makePanel(width: 440)
+        expect(made.collectionBehavior.contains(.canJoinAllSpaces) && made.collectionBehavior.contains(.fullScreenAuxiliary)
+               && !made.hidesOnDeactivate && made.sharingType == WindowHost.sharing && !made.canBecomeKey,
+               "a panel window is on every Space, full-screen apps included, and out of screen capture", &p)
         expect(PanelLayout.scale(440) == 1 && PanelLayout.scale(880) == 1 && PanelLayout.scale(300) == 1,
                "a wider panel gives room, not bigger text", &p)
         expect(PanelLayout.scale(660, filled: true) == 1.5 && PanelLayout.scale(1800, filled: true) == 2
