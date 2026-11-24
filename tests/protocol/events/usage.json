@@ -1,0 +1,1 @@
+{"type": "usage", "call": {"input": 1800, "output": 420, "cache_read": 52000, "cache_write": 6100, "requests": 9, "usd": 0.0014}, "today": {"input": 1800, "output": 420, "cache_read": 52000, "cache_write": 6100, "requests": 9, "usd": 0.0014}, "month": {"input": 9100, "output": 2200, "cache_read": 260000, "cache_write": 30500, "requests": 44, "usd": 0.0071}}

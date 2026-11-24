@@ -1,0 +1,14 @@
+{
+  "name": "callcoach",
+  "description": "Claude Code plugins for CallCoach, a live call copilot for macOS",
+  "owner": {
+    "name": "CallCoach"
+  },
+  "plugins": [
+    {
+      "name": "callcoach",
+      "source": "./plugin",
+      "description": "Prepares call briefs and refreshes knowledge files for CallCoach from your own sources"
+    }
+  ]
+}

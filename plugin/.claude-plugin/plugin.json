@@ -1,0 +1,8 @@
+{
+  "name": "callcoach",
+  "version": "0.1.0",
+  "description": "Prepare call briefs and refresh knowledge files for CallCoach from your own sources",
+  "author": {
+    "name": "CallCoach"
+  }
+}

@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="$ROOT/engine${PYTHONPATH:+:$PYTHONPATH}"
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  exec "$ROOT/.venv/bin/python" -m callcoach "$@"
+fi
+exec uv run --project "$ROOT" --frozen --quiet python -m callcoach "$@"

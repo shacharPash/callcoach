@@ -1,0 +1,31 @@
+{
+  "lead_in": 1.0,
+  "tail": 3.0,
+  "voices": {
+    "me_he": {"voice": "Carmit", "rate": 190, "lang": "he"},
+    "them_he": {"voice": "Carmit", "rate": 165, "lang": "he"},
+    "me_en": {"voice": "Eddy (English (US))", "rate": 180, "lang": "en"},
+    "them_en": {"voice": "Daniel", "rate": 175, "lang": "en"}
+  },
+  "turns": [
+    {"who": "me", "voice": "me_he", "text": "היי דנה, תודה שמצאת זמן. אני רוצה להבין איך אתם מנהלים היום בקשות גישה לסביבות הענן.", "gap": 0.9},
+    {"who": "them", "voice": "them_he", "text": "בשמחה. האמת שזה די בלגן אצלנו. כל בקשה מגיעה בסלאק, ומישהו מהצוות מאשר ידנית.", "gap": 0.8},
+    {"who": "me", "voice": "me_he", "text": "מתי בפעם האחרונה זה יצר לכם בעיה?", "gap": 0.8},
+    {"who": "them", "voice": "them_he", "text": "בשבוע שעבר מפתח חיכה יומיים לגישה, והשחרור התעכב.", "gap": 0.7},
+    {"who": "me", "voice": "me_he", "text": "כן.", "gap": 0.7},
+    {"who": "them", "voice": "them_he", "text": "זה נשמע לי רעיון מעולה, בטוח הייתי משתמש בכלי כזה.", "gap": 0.9, "moment": "compliment"},
+    {"who": "me", "voice": "me_he", "text": "איך אתם מתמודדים עם הביקורת של SOC 2 בנושא הזה?", "gap": 0.8, "moment": "term"},
+    {"who": "them", "voice": "them_he", "text": "אנחנו מוציאים דוח מאקסל פעם ברבעון. זה לוקח לי בערך יום עבודה.", "gap": 0.8},
+    {"who": "them", "voice": "them_he", "text": "אגב, ראית את המשחק אתמול? היה מטורף.", "gap": 0.9, "moment": "drift"},
+    {"who": "me", "voice": "me_he", "text": "לא הספקתי. אבל רגע, מי אצלכם מחליט על רכישה של כלים כאלה?", "gap": 0.8},
+    {"who": "them", "voice": "them_he", "text": "מארק, מנהל אבטחת המידע שלנו. הנה הוא מצטרף עכשיו.", "gap": 1.2},
+    {"who": "them", "voice": "them_en", "text": "Hi everyone, sorry I'm late. Dana told me you're looking at access requests.", "gap": 0.8, "moment": "switch"},
+    {"who": "me", "voice": "me_en", "text": "Thanks for joining, Mark. How do you handle access reviews today?", "gap": 0.8},
+    {"who": "them", "voice": "them_en", "text": "Honestly, we bought Nimbus Labs last year, but nobody uses it. It's too heavy.", "gap": 0.7, "moment": "company"},
+    {"who": "them", "voice": "them_en", "text": "OK.", "gap": 0.8},
+    {"who": "me", "voice": "me_en", "text": "What would have to be true for you to switch tools?", "gap": 0.8},
+    {"who": "them", "voice": "them_en", "text": "It has to plug into Okta and cut the audit prep from a day to an hour.", "gap": 0.8},
+    {"who": "me", "voice": "me_en", "text": "Got it. Can we do a follow up next week with your team?", "gap": 0.8},
+    {"who": "them", "voice": "them_en", "text": "Sure, send me an invite for Tuesday.", "gap": 0.8}
+  ]
+}

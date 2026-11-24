@@ -1,0 +1,24 @@
+[project]
+name = "callcoach"
+version = "0.1.0"
+description = "Private live call copilot for macOS"
+requires-python = ">=3.12"
+dependencies = [
+  "anthropic==2.8.0",
+  "catap==0.6.1",
+  "claude-agent-sdk==0.2.182",
+  "numpy==2.5.4",
+  "soxr==1.1.0",
+  "webrtcvad-wheels==2.0.14.post1",
+]
+
+[dependency-groups]
+dev = ["pytest==9.2.0"]
+
+[tool.uv]
+package = false
+exclude-newer = "2026-11-14T00:00:00Z"
+
+[tool.pytest.ini_options]
+pythonpath = ["engine"]
+testpaths = ["tests"]

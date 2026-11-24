@@ -1,0 +1,20 @@
+.venv/
+build/
+demo/out/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+*.wav
+*.m4a
+*.aiff
+*.bin
+.worktrees/
+
+/calls/
+/briefs/
+/library/
+/call-types/
+/me.md
+/usage.json
+/Claude outputs/
