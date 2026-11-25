@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from audio_helpers import RATE, delayed, speech_like, to_pcm
 
-from callcoach.aec import FRAME, Cancelled, EchoCanceller, cancel_echo
+from callcoach.aec import FRAME, Cancelled, EchoCanceller, StreamClock, cancel_echo
 from callcoach.data import ME, THEM, Chunk
 
 STEP = 0.02
@@ -47,6 +47,20 @@ def numbered(channel: str, k: int, t0: float = 100.0) -> Chunk:
     return Chunk(channel, pcm, t0 + (k + 1) * STEP)
 
 
+def out_of_line(calls: list[tuple[str, int]]) -> list[int]:
+    """The mic frames that went in after a far-end frame other than their own."""
+    last_render, wrong = 0, []
+    for kind, n in calls:
+        if kind == "render":
+            last_render = n
+        elif last_render != n:
+            wrong.append(n)
+    return wrong
+
+
+FIRST_BURST_FRAMES = 2 * 11
+
+
 def test_the_other_side_passes_straight_on():
     c, out = canceller(FakeApm())
     chunk = numbered(THEM, 0)
@@ -60,13 +74,69 @@ def test_each_mic_frame_goes_in_after_the_far_end_of_the_same_moment():
     for k in range(50):
         c.put(numbered(THEM, k))
         c.put(numbered(ME, k))
-    last_render = 0
-    for kind, n in apm.calls:
-        if kind == "render":
-            last_render = n
-        else:
-            assert last_render == n
+    assert not out_of_line(apm.calls)
     assert [ch.channel for ch in out].count(ME) == 50
+
+
+def late_in_bursts(chunks: list[Chunk], seed: int) -> list[Chunk]:
+    """The same chunks, held back and then delivered together, the way a busy thread delivers them: every chunk of
+    a burst is stamped when the last one comes, and the last one is on time."""
+    rng = np.random.default_rng(seed)
+    out, k = [], 0
+    while k < len(chunks):
+        burst = chunks[k:k + int(rng.integers(1, 12))]
+        out += [Chunk(c.channel, c.pcm, burst[-1].t_end) for c in burst]
+        k += len(burst)
+    return out
+
+
+def in_arrival_order(*streams: list[Chunk]) -> list[Chunk]:
+    return sorted((c for s in streams for c in s), key=lambda c: c.t_end)
+
+
+def test_a_far_end_that_arrives_late_and_in_bursts_lines_up_as_if_it_came_on_time():
+    """Only the first burst, before the far end's start is known, goes in out of line."""
+    apm = FakeApm()
+    c, out = canceller(apm)
+    them = late_in_bursts([numbered(THEM, k) for k in range(200)], seed=3)
+    mine = [Chunk(ME, ch.pcm, ch.t_end + 0.002) for ch in (numbered(ME, k) for k in range(200))]
+    for chunk in in_arrival_order(them, mine):
+        c.put(chunk)
+    c.flush()
+    assert max(out_of_line(apm.calls), default=0) <= FIRST_BURST_FRAMES
+    assert [ch.channel for ch in out].count(ME) == 200
+
+
+def test_a_mic_that_arrives_late_and_in_bursts_lines_up_as_if_it_came_on_time():
+    apm = FakeApm()
+    c, out = canceller(apm)
+    them = [numbered(THEM, k) for k in range(200)]
+    mine = late_in_bursts([numbered(ME, k) for k in range(200)], seed=4)
+    for chunk in in_arrival_order(them, mine):
+        c.put(chunk)
+    c.flush()
+    assert max(out_of_line(apm.calls), default=0) <= FIRST_BURST_FRAMES
+    assert [ch.channel for ch in out].count(ME) == 200
+
+
+def test_a_clock_counts_the_samples_and_fills_only_real_gaps():
+    clock = StreamClock(gap_tolerance_s=0.25)
+    assert clock.add(320, 100.02) == 0 and clock.start == pytest.approx(100.0)
+    assert clock.add(320, 100.2) == 0
+    assert clock.count == 640 and clock.start == pytest.approx(100.0)
+    assert clock.add(320, 101.06) == RATE
+    assert clock.count == 640 + RATE + 320 and clock.time_of(clock.count) == pytest.approx(101.06)
+
+
+def test_a_clock_takes_its_start_from_the_earliest_chunks_of_the_last_window():
+    clock = StreamClock(window_s=2.0)
+    for k in range(50):
+        clock.add(320, 100.0 + (k + 1) * STEP + (0.05 if k == 0 else 0.0))
+    assert clock.start == pytest.approx(100.0)
+    for k in range(50, 400):
+        clock.add(320, 100.0 + 0.1 + (k + 1) * STEP)
+    assert clock.start == pytest.approx(100.1)
+    assert clock.index_at(clock.time_of(1234)) == 1234
 
 
 def test_mic_chunks_come_out_whole_in_order_with_their_times():
@@ -127,6 +197,28 @@ def test_a_gap_in_the_far_end_is_silence():
     c.put(numbered(ME, 30))
     renders = [n for kind, n in apm.calls if kind == "render"]
     assert renders and renders[-1] == 0
+
+
+def test_a_long_silence_on_the_far_end_keeps_only_the_buffer():
+    c, out = canceller(FakeApm(), buffer_s=5.0)
+    c.put(numbered(THEM, 0))
+    c.put(numbered(THEM, 60 * 50))
+    assert len(c._render) == 5 * RATE * 2
+
+
+def test_after_a_gap_in_the_mic_the_mic_lines_up_with_the_far_end_again():
+    apm = FakeApm()
+    c, out = canceller(apm)
+    for k in range(10):
+        c.put(numbered(THEM, k))
+        c.put(numbered(ME, k))
+    for k in range(10, 60):
+        c.put(numbered(THEM, k))
+    for k in range(40, 60):
+        c.put(numbered(ME, k))
+    c.flush()
+    assert not out_of_line(apm.calls)
+    assert [ch.t_end for ch in out if ch.channel == ME] == [numbered(ME, k).t_end for k in [*range(10), *range(40, 60)]]
 
 
 def test_far_end_older_than_keep_is_skipped():
@@ -216,26 +308,30 @@ def db(x: np.ndarray) -> float:
     return 10 * np.log10(np.mean(x.astype(np.float64) ** 2) + 1e-12)
 
 
-def run_live(mic: np.ndarray, far: np.ndarray) -> np.ndarray:
+def run_live(mic: np.ndarray, far: np.ndarray, far_in_bursts: bool = False) -> np.ndarray:
     pytest.importorskip("livekit")
     from callcoach.aec import LivekitApm
 
     c, out = canceller(LivekitApm())
     mic_pcm, far_pcm = to_pcm(mic), to_pcm(far)
     step = 2 * STEP_SAMPLES
-    for k in range(len(mic_pcm) // step):
-        t = 100.0 + (k + 1) * STEP
-        c.put(Chunk(THEM, far_pcm[k * step:(k + 1) * step], t))
-        c.put(Chunk(ME, mic_pcm[k * step:(k + 1) * step], t))
+    n = len(mic_pcm) // step
+    them = [Chunk(THEM, far_pcm[k * step:(k + 1) * step], 100.0 + (k + 1) * STEP) for k in range(n)]
+    mine = [Chunk(ME, mic_pcm[k * step:(k + 1) * step], 100.0 + (k + 1) * STEP) for k in range(n)]
+    if far_in_bursts:
+        them = late_in_bursts(them, seed=9)
+    for chunk in in_arrival_order(them, mine):
+        c.put(chunk)
     c.flush()
     return np.frombuffer(b"".join(ch.pcm for ch in out if ch.channel == ME), dtype="<i2")
 
 
-def test_the_echo_of_the_other_side_is_removed_and_my_voice_stays():
+@pytest.mark.parametrize("far_in_bursts", [False, True], ids=["on time", "late and in bursts"])
+def test_the_echo_of_the_other_side_is_removed_and_my_voice_stays(far_in_bursts):
     far = np.concatenate([speech_like(8, 1), np.zeros(3 * RATE)])
     mine = np.concatenate([np.zeros(8 * RATE), speech_like(3, 2, level=0.1)])
     echo = delayed(far, 40, 0.5)
-    out = run_live(echo + mine, far)
+    out = run_live(echo + mine, far, far_in_bursts)
     raw = to_pcm(echo + mine)
     raw = np.frombuffer(raw, dtype="<i2")
     settled = slice(4 * RATE, 8 * RATE)
