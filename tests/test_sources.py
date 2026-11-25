@@ -163,11 +163,40 @@ def lookup_without_helper(name):
     return f"/x/{name}"
 
 
-def test_the_echo_cancelled_helper_is_preferred(monkeypatch):
+def test_the_helper_is_preferred_without_echo_cancellation(monkeypatch):
     monkeypatch.setattr(sources, "tool", lookup_all)
     kinds = []
     mic = MicSource(on_info=kinds.append)
-    assert mic._command() == ["/x/callcoach-mic"] and kinds == ["helper"]
+    assert mic._command() == ["/x/callcoach-mic", "--no-voice-processing"] and kinds == ["helper"]
+    assert not mic.cancels_echo
+
+
+def test_echo_cancellation_only_when_asked_for(monkeypatch):
+    monkeypatch.setattr(sources, "tool", lookup_all)
+    mic = MicSource(echo_cancel=True)
+    assert mic._command() == ["/x/callcoach-mic"] and mic.cancels_echo
+    monkeypatch.setattr(sources, "tool", lookup_without_helper)
+    mic = MicSource(echo_cancel=True)
+    mic._command()
+    assert not mic.cancels_echo
+
+
+def test_echo_cancellation_is_opt_in():
+    assert not sources.echo_cancel_wanted({})
+    assert not sources.echo_cancel_wanted({"CALLCOACH_ECHO_CANCEL": "0"})
+    assert sources.echo_cancel_wanted({"CALLCOACH_ECHO_CANCEL": "1"})
+
+
+def test_the_live_audio_echo_check_is_on_with_the_helper(monkeypatch):
+    from callcoach.context import Prep
+    from callcoach.protocol import Emitter
+    from callcoach.session import live_sources
+
+    monkeypatch.delenv("CALLCOACH_ECHO_CANCEL", raising=False)
+    monkeypatch.setattr(sources, "tool", lookup_all)
+    (mic, _), echo_check = live_sources(Prep(), Emitter(io.StringIO()))
+    mic._command()
+    assert mic.kind == "helper" and echo_check()
 
 
 def test_ffmpeg_is_used_without_the_helper(monkeypatch):

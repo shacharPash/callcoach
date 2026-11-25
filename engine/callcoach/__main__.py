@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-whisper-vad", action="store_true")
     run.add_argument("--app", action="store_true", help="launched by the app: stdin EOF ends the call")
     run.add_argument("--mic", choices=("auto", "helper", "ffmpeg"), default="auto",
-                     help="auto: echo-cancelled helper when installed, else ffmpeg")
+                     help="auto: the mic helper when installed, else ffmpeg")
     run.add_argument("--glossary", default="", help="names and terms, comma separated")
     srv = sub.add_parser("serve", help="the app's engine: warm up, one call, then the summary")
     srv.add_argument("--data", default=str(DATA_DIR))
@@ -86,7 +86,7 @@ def cmd_run(args) -> int:
     import webrtcvad
 
     from callcoach.engine import CallEngine
-    from callcoach.sources import FileSource, MicSource, SystemSource
+    from callcoach.sources import FileSource, MicSource, SystemSource, echo_cancel_wanted
     from callcoach.transcriber import ServerTranscriber, default_servers
     from callcoach.whisper import reap_orphans
 
@@ -124,7 +124,7 @@ def cmd_run(args) -> int:
             transcriber.set_glossary(glossary)
         mic = None if args.replay else MicSource(
             on_error=on_error, on_info=lambda kind: emitter.note("mic", source=kind), mode=args.mic,
-            log_dir=folder / "logs")
+            log_dir=folder / "logs", echo_cancel=echo_cancel_wanted())
         if args.replay:
             sources = [FileSource(Path(args.replay), realtime=not args.fast)]
         else:
@@ -138,7 +138,7 @@ def cmd_run(args) -> int:
 
         engine = CallEngine(folder=folder, sources=sources, transcriber=transcriber, emitter=emitter,
                             new_vad=new_vad, start_lang=args.lang,
-                            echo_check=lambda: mic is None or mic.kind != "helper", glossary=glossary)
+                            echo_check=lambda: mic is None or not mic.cancels_echo, glossary=glossary)
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: engine.request_stop())
         threading.Thread(target=read_commands, args=(engine, emitter, args.app), daemon=True).start()

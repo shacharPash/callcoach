@@ -3,7 +3,8 @@ import CoreAudio
 import Foundation
 
 // Writes the microphone to stdout as 16 kHz mono 16 bit PCM, echo cancelled by Apple voice processing unless the
-// sound goes to headphones. A change of the audio devices (a call app joining, headphones, another sample rate)
+// sound goes to headphones or --no-voice-processing is given (the engine's default: while voice processing runs,
+// every other app recording the mic gets it almost silent). A change of the audio devices (a call app joining, headphones, another sample rate)
 // restarts the audio engine inside this process.
 // Exit codes the engine reads: 2 no voice processing, 3 the audio keeps changing or did not restart,
 // 4 no input device, 5 no converter, 6 the audio engine did not start, 7 conversion failed.

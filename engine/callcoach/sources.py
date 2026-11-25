@@ -1,6 +1,7 @@
 """Where audio comes from: a recorded file, the microphone, or what the Mac plays."""
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 import time
@@ -16,6 +17,7 @@ from callcoach.data import ME, THEM, Chunk
 Sink = Callable[[Chunk], None]
 
 HELPER = "callcoach-mic"
+ECHO_CANCEL_ENV = "CALLCOACH_ECHO_CANCEL"
 HELPER_NO_VOICE_PROCESSING = 2
 HELPER_DEVICE_CHANGED = 3
 QUICK_CHANGES = 3
@@ -35,6 +37,12 @@ def _end(proc) -> None:
             proc.kill()
             proc.wait()
     proc.stdout.close()
+
+
+def echo_cancel_wanted(environ=os.environ) -> bool:
+    """Apple's echo cancellation stays off unless CALLCOACH_ECHO_CANCEL=1: while it runs on speakers, every other app
+    recording the mic (the call itself) gets it about 40 dB quieter, so the other side hears you faintly."""
+    return environ.get(ECHO_CANCEL_ENV, "") == "1"
 
 
 class FileSource:
@@ -93,8 +101,8 @@ class FileSource:
 
 
 class MicSource:
-    """The default microphone. Prefers callcoach-mic (Apple voice processing, echo cancelled, off when the sound goes
-    to headphones, which have no echo and then keep the other apps' volume); falls back
+    """The default microphone. Prefers callcoach-mic (Apple's audio engine; its echo cancellation on speakers only
+    with echo_cancel, because while it runs the call app gets the mic almost silent); falls back
     to ffmpeg when the helper is missing, voice processing is not available, or (mode auto) the helper keeps
     failing. Restarts when the device changes, the capture stops, or the process stops writing. The first
     audio may take a few seconds (voice processing starts slowly); the helper gets longer to recover from a
@@ -105,8 +113,9 @@ class MicSource:
                  log_dir: Path | None = None, clock: Callable[[], float] = time.time,
                  monotonic: Callable[[], float] = time.monotonic, stall_s: float = 2.0,
                  helper_stall_s: float = HELPER_STALL_S, first_data_s: float = FIRST_DATA_S,
-                 stop_grace_s: float = 2.0):
+                 stop_grace_s: float = 2.0, echo_cancel: bool = False):
         self.device = device
+        self.echo_cancel = echo_cancel
         self.on_error = on_error
         self.on_info = on_info
         self.mode = mode
@@ -141,6 +150,11 @@ class MicSource:
             except subprocess.TimeoutExpired:
                 proc.kill()
 
+    @property
+    def cancels_echo(self) -> bool:
+        """The helper runs Apple's echo cancellation, so the audio echo check is not needed."""
+        return self.kind == "helper" and self.echo_cancel
+
     def check(self, now: float) -> None:
         """The helper and ffmpeg write all the time, silence included: no bytes for a while is a stall."""
         proc, spawned, last = self.proc, self._spawned, self._last_data
@@ -166,7 +180,7 @@ class MicSource:
                     raise
             else:
                 self._chose("helper")
-                return [path]
+                return [path] if self.echo_cancel else [path, "--no-voice-processing"]
         self._chose("ffmpeg")
         return [tool("ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin", "-fflags", "nobuffer",
                 "-f", "avfoundation", "-i", f":{self.device}", "-ac", "1", "-ar", str(RATE),

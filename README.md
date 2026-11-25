@@ -27,7 +27,7 @@ cd ~/callcoach
 ./setup.sh
 ```
 
-`setup.sh` installs the tools and models into `~/.callcoach`, builds the echo-cancelled microphone helper and the app, and copies `CallCoach.app` into `~/Applications`. It is safe to run again, and it skips what is already there. The app is built on your Mac and signed ad hoc, so Gatekeeper does not block it.
+`setup.sh` installs the tools and models into `~/.callcoach`, builds the microphone helper and the app, and copies `CallCoach.app` into `~/Applications`. It is safe to run again, and it skips what is already there. The app is built on your Mac and signed ad hoc, so Gatekeeper does not block it.
 
 The app runs the engine from the folder you cloned into, so keep the clone where it is (or run `./setup.sh` again after moving it).
 

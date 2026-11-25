@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds callcoach-mic, the echo-cancelled microphone helper. Needs only the Command Line Tools.
+# Builds callcoach-mic, the microphone helper (Apple's audio engine). Needs only the Command Line Tools.
 set -euo pipefail
 OUT="${1:?usage: build-mic-helper.sh OUT_DIR}"
 HERE="$(cd "$(dirname "$0")" && pwd)"

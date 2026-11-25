@@ -72,7 +72,7 @@ done
 step "whisper-server"
 [ -x "$TOOLS/bin/whisper-server" ] || "$ROOT/tools/build-whisper-server.sh" "$TOOLS/bin"
 
-step "Echo-cancelled microphone helper"
+step "Microphone helper"
 "$ROOT/tools/build-mic-helper.sh" "$TOOLS/bin" >/dev/null
 
 step "Python environment"

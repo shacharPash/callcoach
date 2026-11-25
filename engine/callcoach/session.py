@@ -299,17 +299,17 @@ def vad_factory(mode: int = 2) -> Callable[[], Callable[[bytes], bool]]:
 def live_sources(prep: Prep, emitter: Emitter, log_dir: Path | None = None, *, mic_mode: str = "auto",
                  fast: bool = False):
     """The call's audio sources, the microphone always among them, and the audio echo check switch (on unless the
-    echo-cancelled helper runs)."""
-    from callcoach.sources import FileSource, MicSource, SystemSource
+    helper cancels the echo)."""
+    from callcoach.sources import FileSource, MicSource, SystemSource, echo_cancel_wanted
 
     if prep.replay:
         return [FileSource(Path(prep.replay), realtime=not fast)], lambda: True
     on_error = lambda message: emitter.error("capture", message)
     mic = MicSource(on_error=on_error, on_info=lambda kind: emitter.note("mic", source=kind), mode=mic_mode,
-                    log_dir=log_dir)
+                    log_dir=log_dir, echo_cancel=echo_cancel_wanted())
     system = SystemSource(on_error=on_error, on_dropout=lambda s: emitter.error(
         "system_audio_dropout", f"the other side's audio dropped for {s:.1f} s (output device change?)"))
-    return [mic, system], lambda: mic.kind != "helper"
+    return [mic, system], lambda: not mic.cancels_echo
 
 
 def live_transcriber(emitter: Emitter, vad: bool = True):
