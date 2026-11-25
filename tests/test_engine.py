@@ -364,6 +364,54 @@ def test_the_audio_echo_check_can_be_turned_off(tmp_path):
     assert fake.transcribed == 2
 
 
+def leftover_call(mine_db):
+    """The other side talks for 3 s; the mic meanwhile has independent audio whose loud part is near mine_db."""
+    them = np.concatenate([np.zeros(RATE), speech_like(3, 1), np.zeros(2 * RATE)])
+    x = speech_like(3, 7, level=0.05)
+    x = x * 10 ** ((mine_db - 20 * np.log10(np.percentile(np.abs(x[x != 0]), 90) + 1e-12)) / 20)
+    mic = np.concatenate([np.zeros(RATE), x, np.zeros(2 * RATE)])
+    return to_pcm(mic), to_pcm(them)
+
+
+def faint(frame):
+    return peak(frame) > 30
+
+
+class ByLevel(CountingTranscriber):
+    def transcribe(self, pcm, lang):
+        super().transcribe(pcm, lang)
+        return "the other side talking" if peak(pcm) > 20000 else "something on my side"
+
+
+def test_a_faint_leftover_of_the_echo_over_the_other_side_is_dropped(tmp_path):
+    me, them = leftover_call(-58)
+    fake = ByLevel()
+    log = tmp_path / "events.log"
+    engine, out = make_engine(tmp_path, me, them, fake, new_vad=lambda: faint)
+    engine.emitter.set_log(log)
+    engine.run()
+    assert [l["channel"] for l in lines_of(events_of(out))] == ["them"]
+    notes = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
+    dropped = [n for n in notes if n.get("kind") == "echo_dropped"]
+    assert dropped and all("level" in n and n["limit"] == -50.0 for n in dropped)
+
+
+def test_my_voice_over_the_other_side_is_kept(tmp_path):
+    me, them = leftover_call(-25)
+    fake = ByLevel()
+    engine, out = make_engine(tmp_path, me, them, fake, new_vad=lambda: faint)
+    engine.run()
+    assert sorted(l["channel"] for l in lines_of(events_of(out)))[0] == "me"
+
+
+def test_the_level_gate_can_be_turned_off(tmp_path):
+    me, them = leftover_call(-58)
+    fake = ByLevel()
+    engine, out = make_engine(tmp_path, me, them, fake, new_vad=lambda: faint, echo_gate_db=None)
+    engine.run()
+    assert "me" in [l["channel"] for l in lines_of(events_of(out))]
+
+
 class SilentOnEnglish(FakeTranscriber):
     def transcribe(self, pcm, lang):
         return "" if peak(pcm) == 12000 else super().transcribe(pcm, lang)

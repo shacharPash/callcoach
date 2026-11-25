@@ -299,7 +299,8 @@ def vad_factory(mode: int = 2) -> Callable[[], Callable[[bytes], bool]]:
 def live_sources(prep: Prep, emitter: Emitter, log_dir: Path | None = None, *, mic_mode: str = "auto",
                  fast: bool = False):
     """The call's audio sources, the microphone always among them, and the audio echo check switch (on unless the
-    helper cancels the echo)."""
+    helper cancels the echo). The live mic goes through CallCoach's own echo canceller, unless Apple's runs."""
+    from callcoach.aec import cancel_echo
     from callcoach.sources import FileSource, MicSource, SystemSource, echo_cancel_wanted
 
     if prep.replay:
@@ -309,7 +310,8 @@ def live_sources(prep: Prep, emitter: Emitter, log_dir: Path | None = None, *, m
                     log_dir=log_dir, echo_cancel=echo_cancel_wanted())
     system = SystemSource(on_error=on_error, on_dropout=lambda s: emitter.error(
         "system_audio_dropout", f"the other side's audio dropped for {s:.1f} s (output device change?)"))
-    return [mic, system], lambda: not mic.cancels_echo
+    sources = [mic, system] if mic.echo_cancel else cancel_echo([mic, system], emitter.note)
+    return sources, lambda: not mic.cancels_echo
 
 
 def live_transcriber(emitter: Emitter, vad: bool = True):

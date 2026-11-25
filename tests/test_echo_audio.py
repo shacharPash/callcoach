@@ -1,7 +1,7 @@
 import numpy as np
 from audio_helpers import RATE, delayed, speech_like, to_pcm
 
-from callcoach.echo_audio import AudioHistory, echo_score, envelope
+from callcoach.echo_audio import AudioHistory, LevelGate, echo_score, envelope, level, peak_level
 
 
 def noise(n, seed=9, level=0.002):
@@ -101,3 +101,57 @@ def test_an_echo_must_be_clearly_quieter_than_the_other_side():
     them = speech_like(4, 1)
     assert echo_score(to_pcm(delayed(them, 80, 0.6)), to_pcm(them)) == 0.0
     assert echo_score(to_pcm(delayed(them, 80, 0.25) + noise(len(them))), to_pcm(them)) > 0.8
+
+
+def at_db(seconds, db, seed=3):
+    """Speech-like audio whose loudest 300 ms (the gate's level) are at db dBFS."""
+    x = speech_like(seconds, seed, level=0.05)
+    return x * 10 ** ((db - peak_level(to_pcm(x))) / 20)
+
+
+def test_levels_are_in_dbfs():
+    tone = to_pcm(np.full(RATE, 0.1))
+    assert abs(level(tone) - -20) < 0.1 and abs(peak_level(tone) - -20) < 0.1
+    assert level(bytes(2 * RATE)) == -60.0 and peak_level(bytes(2 * RATE)) == -60.0
+    assert level(b"") == -60.0 and peak_level(b"") == -60.0
+
+
+def test_the_peak_level_finds_a_short_word_in_a_long_quiet_segment():
+    pcm = to_pcm(np.concatenate([at_db(3, -55), at_db(0.4, -25, seed=4), at_db(3, -55, seed=5)]))
+    assert level(pcm) < -50 and peak_level(pcm) > -28
+
+
+def test_until_my_voice_is_known_only_very_quiet_audio_over_the_other_side_is_echo():
+    gate, them = LevelGate(), to_pcm(at_db(2, -20, seed=1))
+    assert gate.judge(to_pcm(at_db(2, -55)), them)[0]
+    assert not gate.judge(to_pcm(at_db(2, -45)), them)[0]
+
+
+def test_my_voice_is_learned_while_the_other_side_is_quiet():
+    gate, silence, them = LevelGate(), bytes(4 * RATE), to_pcm(at_db(2, -20, seed=1))
+    for seed in range(3):
+        assert gate.judge(to_pcm(at_db(2, -30, seed)), silence)[0] is False
+    assert abs(gate.limit() - -42) < 1.5
+    assert gate.judge(to_pcm(at_db(2, -45)), them)[0]
+    assert not gate.judge(to_pcm(at_db(2, -33)), them)[0]
+
+
+def test_short_sentences_do_not_teach_my_voice():
+    gate = LevelGate()
+    gate.judge(to_pcm(at_db(0.3, -30)), bytes(RATE))
+    assert gate.limit() == -50.0
+
+
+def test_nothing_is_echo_while_the_other_side_is_quiet():
+    gate = LevelGate()
+    assert not gate.judge(to_pcm(at_db(2, -58)), bytes(4 * RATE))[0]
+
+
+def test_a_short_reply_inside_a_long_leftover_of_the_echo_is_kept():
+    gate, silence, them = LevelGate(), bytes(4 * RATE), to_pcm(at_db(7, -20, seed=1))
+    for seed in range(3):
+        gate.judge(to_pcm(at_db(2, -25, seed)), silence)
+    leftover = at_db(6, -55, seed=6)
+    assert gate.judge(to_pcm(leftover), them)[0]
+    leftover[3 * RATE:3 * RATE + RATE * 4 // 10] += at_db(0.4, -25, seed=7)
+    assert not gate.judge(to_pcm(leftover), them)[0]

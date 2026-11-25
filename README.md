@@ -6,6 +6,8 @@ A private live call copilot for macOS. While you are on a call (Zoom, Meet, Slac
 
 Transcription runs on your Mac with whisper.cpp. Only the text goes to the agent (your Claude subscription or an Anthropic API key). Audio never leaves the machine.
 
+Headphones are not needed: the echo of the other side that the mic picks up from the speakers is removed on the Mac too, with WebRTC's echo canceller, before anything is recorded or transcribed.
+
 This is a personal project, shared as is. It works for me every day, but expect rough edges.
 
 Recording a call can require the consent of everyone on it, depending on where you and they are. That is your responsibility.

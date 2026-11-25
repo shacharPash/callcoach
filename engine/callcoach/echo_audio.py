@@ -1,8 +1,10 @@
 """Speaker echo on the mic, judged from audio: the mic's energy envelope follows the other side's, at a clearly
-lower level (sound from the speakers reaches the mic attenuated). Segments under about a second are not judged."""
+lower level (sound from the speakers reaches the mic attenuated). Segments under about a second are not judged.
+What the echo canceller leaves of the echo is caught by its level (LevelGate)."""
 from __future__ import annotations
 
 import threading
+from collections import deque
 
 import numpy as np
 
@@ -16,6 +18,12 @@ MIN_ATTENUATION_DB = 10.0
 LEVEL_PERCENTILE = 90
 LEAD_FRAMES = 5
 LAG_FRAMES = 15
+GATE_MARGIN_DB = 12.0
+GATE_FALLBACK_DB = -50.0
+THEM_ACTIVE_DB = -45.0
+LEARN_FRAMES = 25
+LEARN_KEEP = 15
+PEAK_FRAMES = 15
 
 
 def envelope(pcm: bytes) -> np.ndarray:
@@ -26,6 +34,22 @@ def envelope(pcm: bytes) -> np.ndarray:
     frames = x[: n * FRAME].reshape(n, FRAME)
     rms = np.sqrt(np.mean(frames * frames, axis=1) + 1e-12)
     return np.maximum(20.0 * np.log10(rms), FLOOR_DB)
+
+
+def level(pcm: bytes) -> float:
+    """The level of the loud part of the audio, in dBFS."""
+    env = envelope(pcm)
+    return float(np.percentile(env, LEVEL_PERCENTILE)) if len(env) else FLOOR_DB
+
+
+def peak_level(pcm: bytes) -> float:
+    """The level of the loudest 300 ms of the audio, in dBFS: a short word in a long quiet segment still counts."""
+    env = envelope(pcm)
+    if not len(env):
+        return FLOOR_DB
+    power = 10.0 ** (env / 10.0)
+    k = min(PEAK_FRAMES, len(power))
+    return float(10.0 * np.log10(np.convolve(power, np.ones(k) / k, mode="valid").max()))
 
 
 def echo_score(mic: bytes, them: bytes) -> float:
@@ -80,3 +104,33 @@ class AudioHistory:
                 out[(lo - start) * SAMPLE_BYTES:(hi - start) * SAMPLE_BYTES] = \
                     self.buf[lo * SAMPLE_BYTES:hi * SAMPLE_BYTES]
         return bytes(out)
+
+
+class LevelGate:
+    """What the echo canceller leaves of the echo: a sentence on the mic whose loudest 300 ms are much quieter than
+    my voice, while the other side talks. My voice's level is the median of my sentences while the other side is
+    quiet (half a second or more each); until there is one, a fixed limit. A sentence of mine said over the other
+    side keeps its level, and so does a short word inside a long quiet segment, so they stay."""
+
+    def __init__(self, margin_db: float = GATE_MARGIN_DB, fallback_db: float = GATE_FALLBACK_DB,
+                 them_active_db: float = THEM_ACTIVE_DB):
+        self.margin = margin_db
+        self.fallback = fallback_db
+        self.them_active = them_active_db
+        self._levels: deque[float] = deque(maxlen=LEARN_KEEP)
+        self._lock = threading.Lock()
+
+    def limit(self) -> float:
+        with self._lock:
+            return float(np.median(self._levels)) - self.margin if self._levels else self.fallback
+
+    def judge(self, mic: bytes, them: bytes) -> tuple[bool, float, float]:
+        """Whether the mic sentence is left-over echo, with its level and the limit it was judged by."""
+        mine = peak_level(mic)
+        if level(them) < self.them_active:
+            if len(mic) // SAMPLE_BYTES >= LEARN_FRAMES * FRAME:
+                with self._lock:
+                    self._levels.append(mine)
+            return False, mine, self.limit()
+        limit = self.limit()
+        return mine < limit, mine, limit

@@ -85,6 +85,7 @@ def read_commands(engine, emitter: Emitter, stop_on_eof: bool) -> None:
 def cmd_run(args) -> int:
     import webrtcvad
 
+    from callcoach.aec import cancel_echo
     from callcoach.engine import CallEngine
     from callcoach.sources import FileSource, MicSource, SystemSource, echo_cancel_wanted
     from callcoach.transcriber import ServerTranscriber, default_servers
@@ -130,7 +131,7 @@ def cmd_run(args) -> int:
         else:
             system = SystemSource(on_error=on_error, on_dropout=lambda s: emitter.error(
                 "system_audio_dropout", f"the other side's audio dropped for {s:.1f} s (output device change?)"))
-            sources = [mic, system]
+            sources = [mic, system] if mic.echo_cancel else cancel_echo([mic, system], emitter.note)
 
         def new_vad():
             vad = webrtcvad.Vad(args.vad_mode)

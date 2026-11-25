@@ -7,6 +7,7 @@ dependencies = [
   "anthropic==2.8.0",
   "catap==0.6.1",
   "claude-agent-sdk==0.2.182",
+  "livekit==1.2.1",
   "numpy==2.5.4",
   "soxr==1.1.0",
   "webrtcvad-wheels==2.0.14.post1",

@@ -1,7 +1,8 @@
 """Wires sources, recording, segmentation, language routing, transcription and events.
 
 While CallCoach does not hear me (set_hearing), every microphone chunk is silence of the same length before anything
-uses it: me.wav stays in step with them.wav, and nothing of my voice is kept, transcribed, sent on or measured."""
+here uses it: me.wav stays in step with them.wav, and nothing of my voice is kept, transcribed, sent on or measured.
+Only the echo canceller (aec.py), which keeps nothing, sees the mic before that."""
 from __future__ import annotations
 
 import dataclasses
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from callcoach.data import CHANNELS, ME, THEM, Chunk, Line, Segment
-from callcoach.echo_audio import AudioHistory, echo_score
+from callcoach.echo_audio import GATE_MARGIN_DB, AudioHistory, LevelGate, echo_score
 from callcoach.language import ConversationLanguage, LanguageRouter
 from callcoach.protocol import Emitter
 from callcoach.recorder import FinalizeResult, Recorder
@@ -28,13 +29,18 @@ STATUS_DEFAULTS = {"agent": "off", "level": "normal", "visible": True}
 ME_VOICE_S = 1.0
 
 
+def _name(source) -> str:
+    return getattr(source, "name", type(source).__name__)
+
+
 class CallEngine:
     def __init__(self, *, folder: Path, sources: list, transcriber: Transcriber, emitter: Emitter,
                  new_vad: Callable[[], Callable[[bytes], bool]], start_lang: str = "he",
                  clock: Callable[[], float] = time.time, workers: int = 4,
                  auto_stop_seconds: float = 300.0, status_every: float = 1.0,
                  status_extra: Callable[[], dict] | None = None, echo_threshold: float | None = 0.65,
-                 echo_check: Callable[[], bool] = lambda: True, glossary: tuple[str, ...] = (),
+                 echo_check: Callable[[], bool] = lambda: True, echo_gate_db: float | None = GATE_MARGIN_DB,
+                 glossary: tuple[str, ...] = (),
                  on_segment: Callable[[Segment], None] | None = None,
                  on_line: Callable[[Line, str], None] | None = None,
                  on_partial: Callable[[str, str], None] | None = None,
@@ -60,6 +66,7 @@ class CallEngine:
         self.echo = EchoFilter()
         self.echo_threshold = echo_threshold
         self.echo_check = echo_check
+        self.gate = LevelGate(margin_db=echo_gate_db) if echo_gate_db is not None else None
         self.them_audio = AudioHistory()
         self.glossary = glossary
         self.on_segment = on_segment
@@ -171,7 +178,7 @@ class CallEngine:
                 source.start(self.chunks.put)
                 started.append(source)
             except Exception as e:
-                self.emitter.error("source", f"{type(source).__name__} could not start: {e}")
+                self.emitter.error("source", f"{_name(source)} could not start: {e}")
         self.sources = started
         if not started:
             self.emitter.error("no_sources", "no audio source could start; the call ends")
@@ -299,19 +306,27 @@ class CallEngine:
         self.pool.submit(self._transcribe, seg)
 
     def _audio_echo(self, seg: Segment) -> bool:
-        if seg.channel != ME or self.echo_threshold is None or self.them_audio.end is None:
-            return False
-        if not self.echo_check():
+        """Echo on the mic, judged from audio: its envelope follows the other side's (unless Apple's echo
+        cancellation runs), or it is much quieter than my voice while the other side talks."""
+        envelope_check = self.echo_threshold is not None and self.echo_check()
+        if seg.channel != ME or self.them_audio.end is None or not (envelope_check or self.gate):
             return False
         end = seg.t_start + seg.duration
         deadline = time.monotonic() + 1.0
         while self.last_t[THEM] < end + 0.3 and time.monotonic() < deadline and not self._sources_done():
             time.sleep(0.02)
-        score = echo_score(seg.pcm, self.them_audio.slice(seg.t_start, end))
-        if score < self.echo_threshold:
-            return False
-        self.emitter.note("echo_dropped", segment_id=seg.id, score=round(score, 3))
-        return True
+        them = self.them_audio.slice(seg.t_start, end)
+        if envelope_check:
+            score = echo_score(seg.pcm, them)
+            if score >= self.echo_threshold:
+                self.emitter.note("echo_dropped", segment_id=seg.id, score=round(score, 3))
+                return True
+        if self.gate:
+            quiet, mine, limit = self.gate.judge(seg.pcm, them)
+            if quiet:
+                self.emitter.note("echo_dropped", segment_id=seg.id, level=round(mine, 1), limit=round(limit, 1))
+                return True
+        return False
 
     def _echo_dropped(self, seg: Segment) -> bool:
         """The audio echo check fails open: a check that raises lets the segment be transcribed."""
@@ -407,7 +422,7 @@ class CallEngine:
             try:
                 source.stop()
             except Exception as e:
-                self.emitter.error("source", f"{type(source).__name__} did not stop: {e}")
+                self.emitter.error("source", f"{_name(source)} did not stop: {e}")
             if getattr(source, "error", None):
                 self.emitter.error("source", str(source.error))
         try:
