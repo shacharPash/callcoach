@@ -193,7 +193,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let menu = NSMenu()
         if state.inCall {
             menu.addItem(item(L("הצג את הפאנל", "Show the panel"), #selector(showPanelFromMenu), MenuSymbol.show))
-            menu.addItem(item(L("עצור את השיחה", "Stop the call"), #selector(stopFromMenu), MenuSymbol.stop))
+            menu.addItem(item(CallMenuItem.stop.title(state.model), #selector(stopFromMenu), MenuSymbol.stop))
+            menu.addItem(item(CallMenuItem.stopSummary.title(state.model), #selector(stopSummaryFromMenu), MenuSymbol.stopSummary))
         } else {
             state.reloadBriefs()
             menu.addItem(item(Briefs.startTitle(state.briefChoice()), #selector(startCallNow), MenuSymbol.start))
@@ -261,6 +262,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc func screenFromMenu() { state.perform(Actions.screen) }
 
     @objc func stopFromMenu() { state.stop() }
+
+    @objc func stopSummaryFromMenu() { state.stop(summary: true) }
 
     @objc func toggleCoachFromMenu() { state.toggleCoach() }
 
@@ -495,6 +498,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                     menu.addItem(item(entry.title(model), model.folder != nil ? #selector(copyTranscriptFromMenu) : nil, MenuSymbol.copy))
                 case .stop:
                     menu.addItem(item(entry.title(model), active ? #selector(stopFromMenu) : nil, MenuSymbol.stop))
+                case .stopSummary:
+                    menu.addItem(item(entry.title(model), active ? #selector(stopSummaryFromMenu) : nil, MenuSymbol.stopSummary))
                 }
             }
         } else {
@@ -515,11 +520,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         quit.image = NSImage(systemSymbolName: MenuSymbol.quit, accessibilityDescription: nil)
     }
 
-    /// The items of the menu in a call, in order. The coach items are there only while the coach is on.
+    /// The items of the menu in a call, in order. The coach items are there only while the coach is on. The stop has
+    /// no summary; the item after it asks for one.
     static func callMenu(_ model: CallModel) -> [CallMenuItem] {
         var items: [CallMenuItem] = [.coachSwitch, .panel, .bringHere, .pause, .copy]
         if model.chips.coach { items += [.separator, .ask, .terms, .screen, .context, .mark] }
-        items += [.separator, .stop]
+        items += [.separator, .stop, .stopSummary]
         return items
     }
 
@@ -562,7 +568,7 @@ enum CallIcon: CaseIterable { case none, recording, coach }
 
 /// An item of the menu in a call.
 enum CallMenuItem {
-    case separator, coachSwitch, ask, terms, screen, context, mark, panel, bringHere, pause, copy, stop
+    case separator, coachSwitch, ask, terms, screen, context, mark, panel, bringHere, pause, copy, stop, stopSummary
 
     func title(_ model: CallModel) -> String {
         switch self {
@@ -579,6 +585,7 @@ enum CallMenuItem {
         case .pause: return AppDelegate.pauseTitle(model)
         case .copy: return L("העתק את התמלול", "Copy the transcript")
         case .stop: return L("עצור את השיחה", "Stop the call")
+        case .stopSummary: return L("עצור וסכם", "Stop and summarize")
         }
     }
 }
@@ -604,10 +611,11 @@ enum MenuSymbol {
     static let show = "eye"
     static let bringHere = "rectangle.on.rectangle"
     static let stop = "stop.circle"
+    static let stopSummary = "text.badge.checkmark"
     static let coach = "sparkles"
 
     static let all = [start, record, prepare, open, settings, quit, ask, termsNow, screen, context, pause, resume, copy,
-                      mark, hide, show, bringHere, stop, coach]
+                      mark, hide, show, bringHere, stop, stopSummary, coach]
 }
 
 extension SelfCheck {
@@ -630,6 +638,9 @@ extension SelfCheck {
         expect(recTitles.contains(L("הפעל את המאמן", "Turn the coach on")) && !AppDelegate.callMenu(rec).contains(.ask)
                && !AppDelegate.callMenu(rec).contains(.mark) && AppDelegate.callMenu(rec).contains(.stop),
                "a recording has no coach items and offers the coach \(recTitles)", &p)
+        expect(AppDelegate.callMenu(rec).suffix(2) == [.stop, .stopSummary] && AppDelegate.callMenu(withCoach).suffix(2) == [.stop, .stopSummary]
+               && CallMenuItem.stopSummary.title(rec) == L("עצור וסכם", "Stop and summarize"),
+               "the menu ends with the stop and, after it, stop and summarize", &p)
         expect(coachTitles.contains(L("כבה את המאמן", "Turn the coach off")) && AppDelegate.callMenu(withCoach).contains(.ask)
                && AppDelegate.callMenu(withCoach).contains(.terms) && AppDelegate.callMenu(withCoach).contains(.screen)
                && AppDelegate.callMenu(withCoach).contains(.context) && AppDelegate.callMenu(withCoach).contains(.mark),

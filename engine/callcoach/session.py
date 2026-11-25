@@ -47,15 +47,16 @@ def with_terms(glossary: tuple[str, ...], terms) -> tuple[str, ...]:
     return tuple(names)
 
 
-# The summary_ready message of a call that asked for no summary (a recording the coach never joined, or a stop
-# with the summary off).
+# The summary_ready message of a call that asked for no summary: a stop with the summary off, or a call that ended
+# without a stop.
 NO_SUMMARY = "בלי סיכום"
 
 
 class CallAgent:
     """The agent side of one call: orchestrator, in-call commands, goals, usage and the summary. The coach is on or
-    off and can switch at any moment; while it is off nothing is sent to the model. The summary is written when the
-    stop command asks for it, or, with no choice made, when the coach was on at any point. The first moment the coach
+    off and can switch at any moment; while it is off nothing is sent to the model. The summary is written only when the
+    stop command asks for it; a call that ends without one (the end of stdin, auto stop, an error) has none, and it can
+    be written later with `callcoach summary`. The first moment the coach
     is on with the ask section open (the start, the coach joining, or ask opening later) brings the brief's opening
     questions and, for a call without goals but with notes or a brief, a background request for goals and opening
     questions; once in a call, whatever is toggled after. The call starts with the call type's goals. The terms of the
@@ -83,7 +84,7 @@ class CallAgent:
         self.ever_coach = self.coach
         # Whether the opening questions and the goals request had their moment (the coach on with ask open).
         self.opening_done = False
-        self.summary: bool | None = None
+        self.summary = False
         self.folder: Path | None = None
         self.started = 0.0
 
@@ -248,8 +249,7 @@ class CallAgent:
 
         notes = "\n".join(filter(None, [self.prep.text.strip(), *self.orchestrator.context_notes()]))
         self._meta(goals=[g.to_dict() for g in goals], **({"notes": notes} if notes else {}))
-        wanted = self.ever_coach if self.summary is None else self.summary
-        if not wanted:
+        if not self.summary:
             call.update(self.usage.save(folder / "usage.json", self.prices))
             day, month = totals(folder.parent, self.today())
             self.emitter.emit("usage", call=call, today=day, month=month)

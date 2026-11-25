@@ -507,10 +507,11 @@ final class AppState: ObservableObject {
         if !inCall && !starting { retire() }
     }
 
-    func stop() {
+    /// The stop of the menu bar, the Dock and the main window: without a summary unless its item asks for one.
+    func stop(summary: Bool = false) {
         guard model.phase == .active, model.stopSummary == nil else { return }
         model.stopConfirmUntil = nil
-        send(.stop(summary: model.summaryByDefault))
+        send(.stop(summary: summary))
     }
 
     /// The panel's Stop: the first click opens the second step, where one of two buttons stops the call.
@@ -1018,7 +1019,8 @@ extension SelfCheck {
         state.setVisible(true)
         expect(channels[3].sent.count == beforeRecap, "showing a panel that is already shown asks for nothing", &p)
         state.stop()
-        expect(channels[3].sent.last == .stop(summary: true), "a stop from the menu with the coach on summarizes", &p)
+        expect(channels[3].sent.last == .stop(summary: false) && state.model.stopSummary == false,
+               "a stop from the menu with the coach on has no summary", &p)
         channels[3].emit(#"{"type": "stopped"}"#)
 
         state.startRecording()
@@ -1030,8 +1032,9 @@ extension SelfCheck {
         expect(channels[4].sent.last == .setVisibility(false), "a folded panel is not visible for the engine", &p)
         state.toggleFold()
         expect(channels[4].sent.last == .setVisibility(true), "unfolded it is", &p)
-        state.stop()
-        expect(channels[4].sent.last == .stop(summary: false), "a stop from the menu in a recording has no summary", &p)
+        state.stop(summary: true)
+        expect(channels[4].sent.last == .stop(summary: true) && state.model.stopSummary == true,
+               "the menu's stop and summarize asks for one, in a recording too", &p)
         state.toggleChip(.translate)
         expect(channels[4].sent.suffix(3) == [.setCoach(true), .setSections(Sections(ask: false, terms: false)), .setTranslate(true)]
                && state.model.chips.on == [.translate, .transcript] && state.model.coachEver && Settings.transcriptInPanel(defaults),

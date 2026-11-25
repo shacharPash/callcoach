@@ -2,7 +2,7 @@
 
 ![CallCoach: a live call copilot for your Mac, with a panel only you see](assets/banner.png)
 
-A private live call copilot for macOS. While you are on a call (Zoom, Meet, Slack, WhatsApp, any app), CallCoach transcribes both sides locally in Hebrew and English, and an AI agent shows short suggestions, terms and questions in a floating panel only you can see. After the call it writes a summary.
+A private live call copilot for macOS. While you are on a call (Zoom, Meet, Slack, WhatsApp, any app), CallCoach transcribes both sides locally in Hebrew and English, and an AI agent shows short suggestions, terms and questions in a floating panel only you can see. When the call ends it writes a summary if you ask for one.
 
 Transcription runs on your Mac with whisper.cpp. Only the text goes to the agent (your Claude subscription or an Anthropic API key). Audio never leaves the machine.
 

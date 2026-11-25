@@ -22,6 +22,7 @@ pytestmark = pytest.mark.skipif(not has_ffmpeg(), reason="ffmpeg not installed")
 START = {"type": "start", "call_type": "validation", "lang": "he", "level": "normal", "text": "דנה מ-Acme, בקשות גישה",
          "brief": "", "length_min": 30, "goals": [{"id": "g1", "text": "מי מחליט", "done": False}],
          "glossary": ["Okta"], "name": "demo", "title": "", "questions": []}
+SUMMARIZE = {"type": "stop", "summary": True}
 
 
 class Servers(FakeTranscriber):
@@ -50,27 +51,58 @@ class FailingServers(Servers):
         raise FileNotFoundError("whisper-server not found")
 
 
-class Script:
-    """stdin for the session: the given lines, then EOF once the call is finalized (or at once with no call)."""
+class HeldFile(FileSource):
+    """The call's audio. When it has ended, its stop waits until the session has read the script's `then`, so that
+    command is the stop the call ends with, as the app's stop is."""
 
-    def __init__(self, out, *commands, wait_for="finalized"):
+    def __init__(self, path):
+        super().__init__(path, realtime=False)
+        self.stopping = threading.Event()
+        self.read = threading.Event()
+
+    def stop(self):
+        super().stop()
+        self.stopping.set()
+        self.read.wait(30)
+
+
+class Script:
+    """stdin for the session: the given lines, then `then` once the call is ending (with a HeldFile), then EOF once
+    the call is finalized (or at once with no call)."""
+
+    def __init__(self, out, *commands, wait_for="finalized", then=None, held=None):
         self.out = out
-        self.lines = [json.dumps(c, ensure_ascii=False) + "\n" if isinstance(c, dict) else c for c in commands]
+        self.lines = [line(c) if isinstance(c, dict) else c for c in commands]
         self.wait_for = wait_for
+        self.then = line(then) if then else None
+        self.held = held
 
     def readline(self):
         if self.lines:
             return self.lines.pop(0)
+        if self.then:
+            self.held.stopping.wait(30)
+            then, self.then = self.then, None
+            return then
+        if self.held:
+            self.held.read.set()
         deadline = time.monotonic() + 30
         while self.wait_for and f'"{self.wait_for}"' not in self.out.getvalue() and time.monotonic() < deadline:
             time.sleep(0.02)
         return ""
 
 
+def line(command: dict) -> str:
+    return json.dumps(command, ensure_ascii=False) + "\n"
+
+
 def make(tmp_path, *commands, provider="fake", servers=None, account=None, account_error="", wait_for="finalized",
-         environ=None):
+         environ=None, then=None):
+    """A session over the test call. `then` is the command the call ends with when its audio is over (`SUMMARIZE`,
+    say); without it the call ends by itself, with no stop."""
     wav = tmp_path / "in.wav"
     write_stereo(wav, ME_AUDIO, THEM_AUDIO)
+    held = HeldFile(wav) if then else None
     out = io.StringIO()
     provider = FakeProvider() if provider == "fake" else provider
     servers = servers or Servers()
@@ -83,9 +115,9 @@ def make(tmp_path, *commands, provider="fake", servers=None, account=None, accou
     session = Session(
         data=tmp_path / "data", emitter=Emitter(out), account=account or Account("fake", "fake"),
         provider=provider, account_error=account_error, make_transcriber=make_transcriber,
-        make_sources=lambda prep, emitter, log_dir: ([FileSource(wav, realtime=False)], lambda: True),
+        make_sources=lambda prep, emitter, log_dir: ([held or FileSource(wav, realtime=False)], lambda: True),
         make_engine=lambda **kw: CallEngine(new_vad=lambda: loud, **kw),
-        stdin=Script(out, *commands, wait_for=wait_for), run_dir=tmp_path / "run", prices={},
+        stdin=Script(out, *commands, wait_for=wait_for, then=then, held=held), run_dir=tmp_path / "run", prices={},
         environ={} if environ is None else environ)
     return session, out, provider, servers
 
@@ -99,7 +131,7 @@ def types(out):
 
 
 def test_a_whole_call_through_serve(tmp_path):
-    session, out, fake, servers = make(tmp_path, {"type": "account_check"}, START)
+    session, out, fake, servers = make(tmp_path, {"type": "account_check"}, START, then=SUMMARIZE)
     assert session.run() == 0
     es, ts = events(out), types(out)
     assert ts[:3] == ["hello", "status", "usage"] and es[1]["state"] == "warming" and es[0]["protocol"] == 6
@@ -184,7 +216,7 @@ def test_the_live_servers_write_their_notes_to_the_log(tmp_path, monkeypatch):
 
 def test_context_added_in_the_call_reaches_the_agent_and_the_summary(tmp_path):
     context = {"type": "add_context", "text": "דנה מנהלת IT ב-Acme"}
-    session, out, fake, _ = make(tmp_path, START, context)
+    session, out, fake, _ = make(tmp_path, START, context, then=SUMMARIZE)
     assert session.run() == 0
     summary = [m for kind, m in fake.calls if kind == "summarize"]
     assert summary and "דנה מנהלת IT ב-Acme" in summary[0]
@@ -210,7 +242,7 @@ def okta_reply(message):
 
 def test_a_name_from_the_knowledge_folder_shows_in_the_call_and_the_summary(tmp_path):
     write_people(tmp_path)
-    session, out, fake, _ = make(tmp_path, START)
+    session, out, fake, _ = make(tmp_path, START, then=SUMMARIZE)
     assert session.run() == 0
     es = events(out)
     [term] = [e for e in es if e["type"] == "term" and e["term"] == "Shalom Labs"]
@@ -245,7 +277,7 @@ class SummaryDown(FakeProvider):
 
 def test_terms_json_is_written_before_the_summary_and_kept_when_it_fails(tmp_path):
     fake = SummaryDown(tmp_path / "data" / "calls", replies=okta_reply)
-    session, out, *_ = make(tmp_path, START, provider=fake)
+    session, out, *_ = make(tmp_path, START, provider=fake, then=SUMMARIZE)
     assert session.run() == 0
     assert any(e["type"] == "error" and e["code"] == "summary_failed" for e in events(out))
     call = next((tmp_path / "data" / "calls").iterdir())
@@ -260,7 +292,7 @@ def test_a_terms_file_that_cannot_be_written_still_lets_the_summary_come(tmp_pat
         raise OSError("No space left on device")
 
     monkeypatch.setattr(session_mod, "write_terms", disk_full)
-    session, out, *_ = make(tmp_path, START)
+    session, out, *_ = make(tmp_path, START, then=SUMMARIZE)
     assert session.run() == 0
     assert next(e for e in events(out) if e["type"] == "summary_ready")["ok"]
     log = next((tmp_path / "data" / "calls").iterdir()) / "events.log"
@@ -319,7 +351,8 @@ def test_a_recording_asks_the_model_nothing_and_writes_no_summary(tmp_path):
 
 
 def test_the_coach_switched_on_in_a_recording_records_when_and_summarizes(tmp_path):
-    session, out, fake, _ = make(tmp_path, {**START, "record_only": True}, {"type": "set_coach", "on": True})
+    session, out, fake, _ = make(tmp_path, {**START, "record_only": True}, {"type": "set_coach", "on": True},
+                                 then=SUMMARIZE)
     assert session.run() == 0
     call = next((tmp_path / "data" / "calls").iterdir())
     meta = json.loads((call / "meta.json").read_text(encoding="utf-8"))
@@ -333,6 +366,16 @@ def test_stop_without_a_summary_asks_for_none_and_still_counts_the_usage(tmp_pat
     call = next((tmp_path / "data" / "calls").iterdir())
     summary = next(e for e in events(out) if e["type"] == "summary_ready")
     assert "summarize" not in [kind for kind, _ in fake.calls]
+    assert not summary["ok"] and summary["message"] == "בלי סיכום" and (call / "usage.json").exists()
+
+
+@pytest.mark.parametrize("wait_for", ["finalized", ""], ids=["the call ends by itself", "the end of stdin ends it"])
+def test_a_call_with_the_coach_that_ends_without_a_stop_writes_no_summary(tmp_path, wait_for):
+    session, out, fake, _ = make(tmp_path, START, wait_for=wait_for)
+    assert session.run() == 0
+    call = next((tmp_path / "data" / "calls").iterdir())
+    summary = next(e for e in events(out) if e["type"] == "summary_ready")
+    assert "summarize" not in [kind for kind, _ in fake.calls] and not (call / "summary.md").exists()
     assert not summary["ok"] and summary["message"] == "בלי סיכום" and (call / "usage.json").exists()
 
 
@@ -782,7 +825,7 @@ def test_hearing_and_sections_before_a_call_are_bad_commands(tmp_path):
 def test_a_call_that_stops_hearing_me_says_so_in_the_transcript_and_the_summary(tmp_path):
     hearing_off = {"type": "set_hearing", "on": False}
     sections = {"type": "set_sections", "ask": False, "terms": True}
-    session, out, fake, _ = make(tmp_path, START, sections, hearing_off, {"type": "recap"})
+    session, out, fake, _ = make(tmp_path, START, sections, hearing_off, {"type": "recap"}, then=SUMMARIZE)
     assert session.run() == 0
     call = next((tmp_path / "data" / "calls").iterdir())
     assert "מכאן CallCoach לא שומע אותי" in (call / "transcript.md").read_text(encoding="utf-8")
@@ -864,7 +907,7 @@ def test_a_command_that_fails_in_the_call_is_reported_and_the_next_command_still
 
     monkeypatch.setattr(session_module.CallAgent, "command", command)
     session, out, fake, _ = make(tmp_path, START, {"type": "add_context", "text": "boom"},
-                                 {"type": "add_context", "text": "דנה מנהלת IT ב-Acme"})
+                                 {"type": "add_context", "text": "דנה מנהלת IT ב-Acme"}, then=SUMMARIZE)
     assert session.run() == 0
     errors = [e for e in events(out) if e["type"] == "error"]
     assert [e["code"] for e in errors] == ["command_failed"] and "broken command" in errors[0]["message"]
@@ -875,7 +918,7 @@ def test_a_command_that_fails_in_the_call_is_reported_and_the_next_command_still
 def test_the_end_of_a_call_copies_it_to_the_export_folder(tmp_path):
     root = tmp_path / "drive"
     root.mkdir()
-    session, out, _, _ = make(tmp_path, START, environ={"CALLCOACH_EXPORT": str(root)})
+    session, out, _, _ = make(tmp_path, START, environ={"CALLCOACH_EXPORT": str(root)}, then=SUMMARIZE)
     assert session.run() == 0
     call = next((tmp_path / "data" / "calls").iterdir())
     copied = root / call.name

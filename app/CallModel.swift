@@ -711,10 +711,6 @@ struct CallModel: Equatable {
         return [.recap]
     }
 
-    /// The stop the menu bar, the Dock and the panel's first button use: a summary when the coach was on at any point
-    /// of the call.
-    var summaryByDefault: Bool { coachEver }
-
     /// The first click on עצור opens its second step for a few seconds; nothing stops yet.
     mutating func pressStop(now: Double) -> [Command] {
         guard phase == .active, stopSummary == nil else { return [] }
@@ -1020,13 +1016,13 @@ extension SelfCheck {
         stopping.phase = .active
         expect(stopping.pressStop(now: 1).isEmpty && stopping.stopConfirmUntil == 1 + CallModel.stopConfirmSeconds,
                "the first click opens the second step", &p)
-        expect(!stopping.summaryByDefault && stopping.confirmStop(summary: false) == [.stop(summary: false)] && stopping.stopConfirmUntil == nil,
-               "a recording stops without a summary by default", &p)
+        expect(stopping.confirmStop(summary: false) == [.stop(summary: false)] && stopping.stopConfirmUntil == nil,
+               "stop without a summary", &p)
         var coachStop = CallModel()
         coachStop.phase = .active
         coachStop.coachEver = true
         _ = coachStop.pressStop(now: 1)
-        expect(coachStop.summaryByDefault && coachStop.confirmStop(summary: true) == [.stop(summary: true)], "with the coach, stop and summarize", &p)
+        expect(coachStop.confirmStop(summary: true) == [.stop(summary: true)], "stop and summarize", &p)
         expect(coachStop.confirmStop(summary: true).isEmpty, "no stop without the first click", &p)
         expect(CallModel.stopConfirmSeconds == 5, "five seconds to choose", &p)
         _ = stopping.pressStop(now: 20)
@@ -1048,8 +1044,7 @@ extension SelfCheck {
                && !StatusLine.loading(phase: .stopping, transcribing: false), "טוען תמלול while the models load", &p)
         expect(StatusLine.agentTrouble("auth", coach: true) && !StatusLine.agentTrouble("auth", coach: false)
                && !StatusLine.agentTrouble("ok", coach: true), "the agent's dot shows only with the coach on", &p)
-        expect(StopChoice.order(summaryByDefault: true).map(\.summary) == [true, false]
-               && StopChoice.order(summaryByDefault: false).map(\.summary) == [false, true], "the default stop is first", &p)
+        expect(StopChoice.choices.map(\.summary) == [false, true], "the stop without a summary is first, the default", &p)
         expect(Chip.allCases.filter(ChipsRow.split(after:)) == [.transcript], "the chips' line is after תמלול, before the coach's", &p)
         expect(PanelMenu.keys.map(\.action.id) == ["ask_now", "terms_now", "screen", "mark"],
                "… lists the call's keys but hiding, which the X beside it does", &p)
@@ -1058,9 +1053,11 @@ extension SelfCheck {
         var finishing = CallModel()
         expect(PanelView.finishing(finishing) == PanelView.finishingText, "the finishing line of a recording", &p)
         finishing.coachEver = true
-        expect(PanelView.finishing(finishing) == PanelView.finishingSummaryText, "the finishing line follows the coach", &p)
+        expect(PanelView.finishing(finishing) == PanelView.finishingText, "a call the coach was in, ended with no stop, writes no summary", &p)
+        finishing.stopSummary = true
+        expect(PanelView.finishing(finishing) == PanelView.finishingSummaryText, "the finishing line follows the stop that was sent", &p)
         finishing.stopSummary = false
-        expect(PanelView.finishing(finishing) == PanelView.finishingText, "and the stop that was sent", &p)
+        expect(PanelView.finishing(finishing) == PanelView.finishingText, "a stop without a summary", &p)
         expect(SummaryReady(ok: false, path: "/c/summary.md", message: "בלי סיכום").stoppedWithoutSummary
                && !SummaryReady(ok: false, path: "/c/summary.md", message: "אין חשבון").stoppedWithoutSummary,
                "בלי סיכום is not a failure", &p)

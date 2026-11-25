@@ -118,7 +118,7 @@ struct PanelView: View {
 
     /// The finishing line says whether the summary was asked for.
     static func finishing(_ m: CallModel) -> String {
-        (m.stopSummary ?? m.coachEver) ? finishingSummaryText : finishingText
+        m.stopSummary == true ? finishingSummaryText : finishingText
     }
 
     /// A folded panel is as wide as its content; with no call, the idle panel is not a strip.
@@ -403,8 +403,8 @@ struct LimitBanner: View {
         case "near" where coach:
             return L("מתקרבים למגבלת המנוי. ההקלטה תמשיך גם אם היא תיגמר.", "The subscription limit is near. The recording goes on even if it runs out.")
         case "reached":
-            return L("המכסה של המנוי נגמרה. ההקלטה והתמלול ממשיכים, ובסוף ייכתב סיכום מקומי.",
-                     "The subscription quota ran out. Recording and transcription go on, and a local summary is written at the end.")
+            return L("המכסה של המנוי נגמרה. ההקלטה והתמלול ממשיכים, וסיכום בסוף השיחה ייכתב מקומית.",
+                     "The subscription quota ran out. Recording and transcription go on, and a summary at the end is written locally.")
         default: return nil
         }
     }
@@ -663,17 +663,17 @@ struct StopChoice: View {
     @ObservedObject var state: AppState
     @Environment(\.panelScale) private var scale
 
-    /// The two stop buttons, the default first.
-    static func order(summaryByDefault: Bool) -> [(title: String, summary: Bool)] {
-        let with = (title: L("עצור וסכם", "Stop and summarize"), summary: true)
-        let without = (title: L("עצור בלי סיכום", "Stop without a summary"), summary: false)
-        return summaryByDefault ? [with, without] : [without, with]
+    /// The two stop buttons, the default first: a summary only when asked for, since one can be written later from
+    /// the call's page.
+    static var choices: [(title: String, summary: Bool)] {
+        [(title: L("עצור בלי סיכום", "Stop without a summary"), summary: false),
+         (title: L("עצור וסכם", "Stop and summarize"), summary: true)]
     }
 
     var body: some View {
         // A flow, so on a narrow panel "ביטול" goes to a second row instead of past the edge.
         FlowRow(spacing: 8 * scale) {
-            ForEach(Array(Self.order(summaryByDefault: state.model.summaryByDefault).enumerated()), id: \.offset) { index, choice in
+            ForEach(Array(Self.choices.enumerated()), id: \.offset) { index, choice in
                 Button { state.confirmStop(summary: choice.summary) } label: {
                     button(choice.title, prominent: index == 0)
                 }
