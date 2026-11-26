@@ -30,6 +30,9 @@ class Handler(BaseHTTPRequestHandler):
         self.server.seen.append(fields)
         if fields.get("detect_language") == "true":
             resp = {"language": "english", "language_probabilities": {"en": 0.9, "he": 0.05}}
+        elif fields.get("response_format") == "verbose_json":
+            resp = {"segments": [{"start": 0.5, "end": 2.25, "text": " שלום "}, {"start": 3, "end": 4, "text": "  "},
+                                 {"start": 4.0, "end": 6.5, "text": "מה שלומך"}]}
         else:
             resp = {"text": " שלום עולם \n"}
         data = json.dumps(resp).encode()
@@ -54,6 +57,13 @@ def server():
 
 def client(srv):
     return WhisperClient(f"http://127.0.0.1:{srv.server_port}")
+
+
+def test_segments_come_with_their_times_and_without_empty_ones(server):
+    got = client(server).segments(b"\x00\x00" * 16000, "he", prompt="Okta, Acme")
+    assert got == [(0.5, 2.25, "שלום"), (4.0, 6.5, "מה שלומך")]
+    sent = server.seen[-1]
+    assert sent["no_timestamps"] == "false" and sent["language"] == "he" and sent["prompt"] == "Okta, Acme"
 
 
 def test_transcribe_sends_the_language_and_a_wav(server):

@@ -151,7 +151,8 @@ def test_a_whole_call_through_serve(tmp_path):
     assert [kind for kind, _ in fake.calls][0] == "check" and fake.calls[-1][0] == "summarize"
     assert "prepare" not in [kind for kind, _ in fake.calls]
     meta = json.loads((call / "meta.json").read_text(encoding="utf-8"))
-    assert meta.keys() == {"started", "summary_kind", "summary_local", "call_type", "coach_from", "goals", "notes"} \
+    assert meta.keys() == {"started", "summary_kind", "summary_local", "call_type", "coach_from", "goals", "notes",
+                           "glossary"} \
         and meta["summary_kind"] in ("call", "lecture") and meta["summary_local"] is False
     assert (es[1]["hearing"], es[1]["me_voice"]) == (True, False)
     assert fake.closed
@@ -404,6 +405,30 @@ def test_the_goals_and_the_call_type_go_into_meta_json(tmp_path):
     meta = json.loads((call / "meta.json").read_text(encoding="utf-8"))
     assert meta["call_type"] == "validation" and meta["coach_from"] == 0
     assert [g["text"] for g in meta["goals"]] == ["מי מחליט"]
+    assert meta["glossary"] == ["Okta"]
+
+
+def test_a_call_that_is_saved_starts_its_final_pass_after_the_summary(tmp_path):
+    session, out, _, _ = make(tmp_path, START, then=SUMMARIZE)
+    seen = []
+    session.after_call = lambda folder: seen.append((folder, types(out)[-1]))
+    assert session.run() == 0
+    [(folder, last)] = seen
+    assert folder == next((tmp_path / "data" / "calls").iterdir()) and last == "summary_ready"
+    assert types(out)[-1] == "stopped"
+
+
+def test_a_final_pass_that_cannot_start_is_noted_and_the_call_still_ends(tmp_path):
+    session, out, _, _ = make(tmp_path, START)
+
+    def boom(folder):
+        raise OSError("no such python")
+
+    session.after_call = boom
+    assert session.run() == 0
+    assert types(out)[-1] == "stopped" and "error" not in types(out)
+    log = next((tmp_path / "data" / "calls").iterdir()) / "events.log"
+    assert '"after_call_failed"' in log.read_text(encoding="utf-8")
 
 
 def test_the_opening_questions_show_at_once(tmp_path):

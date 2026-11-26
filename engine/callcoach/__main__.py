@@ -1,4 +1,4 @@
-"""callcoach run | serve | brief | followup | summary | recover | account"""
+"""callcoach run | serve | brief | followup | summary | final | recover | account"""
 from __future__ import annotations
 
 import argparse
@@ -45,6 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     summ = sub.add_parser("summary", help="write the summary of one finished call into its summary.md")
     summ.add_argument("--data", default=str(DATA_DIR))
     summ.add_argument("--call", required=True, help="the call's folder, or its name in <data>/calls")
+    fin = sub.add_parser("final", help="transcribe a finished call again in full, as its final lines")
+    fin.add_argument("--data", default=str(DATA_DIR))
+    fin.add_argument("--call", required=True, help="the call's folder, or its name in <data>/calls")
     rec = sub.add_parser("recover", help="finish calls left by a crash (never while a call is running)")
     rec.add_argument("--data", default=str(DATA_DIR))
     acc = sub.add_parser("account", help="log in a subscription account folder, check it, or log it out")
@@ -153,6 +156,7 @@ def cmd_run(args) -> int:
 
 def cmd_serve(args) -> int:
     from callcoach.engine import CallEngine
+    from callcoach.final import spawn as spawn_final
     from callcoach.provider_factory import Account, build_provider, read_account
     from callcoach.providers import ProviderAuth
     from callcoach.session import Session, live_sources, live_transcriber, vad_factory
@@ -179,7 +183,8 @@ def cmd_serve(args) -> int:
         data=Path(args.data), emitter=emitter, account=account, provider=provider, account_error=error,
         make_transcriber=live_transcriber(emitter, vad=not args.no_whisper_vad),
         make_sources=lambda prep, em, log_dir: live_sources(prep, em, log_dir, mic_mode=args.mic),
-        make_engine=lambda **kw: CallEngine(new_vad=vad_factory(), **kw), on_call_start=on_call_start)
+        make_engine=lambda **kw: CallEngine(new_vad=vad_factory(), **kw), on_call_start=on_call_start,
+        after_call=lambda folder: spawn_final(folder, Path(args.data)))
     return session.run()
 
 
@@ -289,6 +294,26 @@ def cmd_recover(args) -> int:
     return 0
 
 
+def cmd_final(args) -> int:
+    """The final pass of one finished call; prints one JSON line: {"ok", "lines"} or {"ok": false, "reason"}."""
+    from callcoach.final import finish_call
+    from callcoach.followup import FollowupError, call_dir
+    from callcoach.recorder import recording_in_progress
+
+    data = Path(args.data)
+    try:
+        folder = call_dir(data, args.call)
+    except FollowupError as e:
+        print(json.dumps({"ok": False, "reason": str(e)}, ensure_ascii=False))
+        return 1
+    if recording_in_progress(folder):
+        print(json.dumps({"ok": False, "reason": "the call is still recording"}))
+        return 1
+    result = finish_call(folder, data)
+    print(json.dumps({"ok": result.ok, "lines": result.lines, "reason": result.reason}, ensure_ascii=False))
+    return 0 if result.ok else 1
+
+
 def cmd_account(args) -> int:
     from callcoach.provider_factory import account_logout, account_status, bundled_cli, login_command
 
@@ -346,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
     commands = {"run": cmd_run, "serve": cmd_serve, "brief": cmd_brief, "followup": cmd_followup,
-                "summary": cmd_summary, "recover": cmd_recover, "account": cmd_account}
+                "summary": cmd_summary, "final": cmd_final, "recover": cmd_recover, "account": cmd_account}
     return commands[args.command](args)
 
 

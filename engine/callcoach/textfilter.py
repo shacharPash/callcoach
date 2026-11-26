@@ -37,6 +37,17 @@ def _repeats_glossary(words: set[str], glossary: tuple[str, ...]) -> bool:
     return len({t for t in named if not any(t < other for other in named)}) >= 2
 
 
+def repeats(text: str, others: list[str], share: float = 0.8) -> bool:
+    """Whether a line of 3 words or more is the other side's words, in their order: most of its words found in
+    `others`, the other side's lines of the same moment. A shorter line ("yes, sure") is often said by both."""
+    mine = _WORDS.findall(text.lower())
+    if len(mine) < 3:
+        return False
+    near = [w for t in others for w in _WORDS.findall(t.lower())]
+    same = sum(b.size for b in difflib.SequenceMatcher(None, mine, near, autojunk=False).get_matching_blocks())
+    return same >= share * len(mine)
+
+
 def similarity(a: str, b: str) -> float:
     na, nb = " ".join(_WORDS.findall(a.lower())), " ".join(_WORDS.findall(b.lower()))
     return difflib.SequenceMatcher(None, na, nb, autojunk=False).ratio() if na and nb else 0.0

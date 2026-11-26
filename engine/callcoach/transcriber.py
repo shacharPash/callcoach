@@ -13,6 +13,12 @@ from callcoach.whisper import WhisperClient, WhisperServer
 _ERRORS = (urllib.error.URLError, ConnectionError, http.client.HTTPException)
 
 
+def glossary_prompt(terms) -> str:
+    """Names and terms of the call, sent to Whisper as its prompt to bias the spelling."""
+    words = [t.strip() for t in terms if t and t.strip()]
+    return ", ".join(words)[:224].rstrip(", ")
+
+
 class Transcriber(Protocol):
     def detect(self, pcm: bytes) -> dict[str, float] | None: ...
 
@@ -128,9 +134,7 @@ class ServerTranscriber:
             return None
 
     def set_glossary(self, terms) -> None:
-        """Names and terms of the call, sent to Whisper as its prompt to bias the spelling."""
-        words = [t.strip() for t in terms if t and t.strip()]
-        self.prompt = ", ".join(words)[:224].rstrip(", ")
+        self.prompt = glossary_prompt(terms)
 
     def transcribe(self, pcm: bytes, lang: str) -> str:
         prompt = self.prompt

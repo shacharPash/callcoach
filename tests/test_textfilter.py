@@ -1,5 +1,5 @@
 from callcoach.data import ME, THEM, Line, Segment
-from callcoach.textfilter import EchoFilter, clean, similarity
+from callcoach.textfilter import EchoFilter, clean, repeats, similarity
 
 
 def line(id, channel, text, end, segment_id=None):
@@ -102,3 +102,16 @@ def test_one_glossary_item_said_alone_is_kept():
     assert clean("Nimbus Labs.", glossary=("Nimbus Labs", "Okta")) == "Nimbus Labs."
     assert clean("Okta Workflows.", glossary=("Okta", "Okta Workflows")) == "Okta Workflows."
     assert clean("Okta, Nimbus Labs.", glossary=("Nimbus Labs", "Okta")) is None
+
+
+def test_a_line_made_of_the_other_sides_words_repeats_them_even_cut_differently():
+    theirs = ["we will ship the release on Sunday", "morning after the tests pass"]
+    assert repeats("release on Sunday morning after the tests", theirs)
+    assert repeats("We will ship the release on Sunday.", theirs)
+
+
+def test_short_lines_and_lines_of_my_own_do_not_repeat():
+    theirs = ["we will ship the release on Sunday"]
+    assert not repeats("yes Sunday", theirs)
+    assert not repeats("I think Monday is better for us", theirs)
+    assert not repeats("we will ship it", [])

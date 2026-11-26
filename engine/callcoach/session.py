@@ -329,7 +329,7 @@ class Session:
                  make_transcriber: Callable, make_sources: Callable, make_engine: Callable, stdin=sys.stdin,
                  run_dir: Path = RUN_DIR, prices: dict | None = None, today: Callable[[], date] = date.today,
                  clock: Callable[[], float] = time.time, on_call_start: Callable = lambda engine: None,
-                 environ=os.environ):
+                 after_call: Callable[[Path], None] = lambda folder: None, environ=os.environ):
         self.data = data
         self.environ = environ
         self.emitter = emitter
@@ -345,6 +345,7 @@ class Session:
         self.today = today
         self.clock = clock
         self.on_call_start = on_call_start
+        self.after_call = after_call
         self.usage = CallUsage()
         self.transcriber = WarmingTranscriber()
         self.in_call = False
@@ -477,6 +478,11 @@ class Session:
             if (self.run_folder / "logs").is_dir():
                 shutil.copytree(self.run_folder / "logs", folder / "logs", dirs_exist_ok=True)
             finish(result)
+            if result.ok:
+                try:
+                    self.after_call(folder)
+                except Exception as e:
+                    self.emitter.note("after_call_failed", error=f"{type(e).__name__}: {e}"[:300])
 
         hooks["on_finished"] = on_finished
         engine = self.make_engine(folder=folder, sources=sources, transcriber=self.transcriber, emitter=self.emitter,
@@ -488,10 +494,12 @@ class Session:
         engine.run()
 
     def _write_meta(self, folder: Path, prep: Prep) -> None:
-        """meta.json gets the call's title, the brief and the call type, whether it started as a recording, and
-        coach_from 0 for a call that starts with the coach, beside the start time the engine wrote."""
+        """meta.json gets the call's title, the brief, its names and terms (for the final pass) and the call type,
+        whether it started as a recording, and coach_from 0 for a call that starts with the coach, beside the start
+        time the engine wrote."""
         fields = {key: value for key, value in (("title", prep.title), ("brief", prep.brief),
-                                                ("record_only", prep.record_only)) if value}
+                                                ("record_only", prep.record_only), ("glossary", list(prep.glossary)))
+                  if value}
         fields["call_type"] = prep.call_type
         if not prep.record_only:
             fields["coach_from"] = 0

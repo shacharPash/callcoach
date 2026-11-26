@@ -123,6 +123,14 @@ class WhisperClient:
             fields["prompt"] = prompt
         return str(self._post(fields, pcm).get("text", "")).strip()
 
+    def segments(self, pcm: bytes, lang: str, prompt: str = "") -> list[tuple[float, float, str]]:
+        """(start, end, text) of each sentence Whisper found in the audio, in seconds from its start."""
+        fields = {"language": lang, "response_format": "verbose_json", "temperature": "0.0", "no_timestamps": "false"}
+        if prompt:
+            fields["prompt"] = prompt
+        return [(float(s["start"]), float(s["end"]), str(s.get("text", "")).strip())
+                for s in self._post(fields, pcm).get("segments", []) if str(s.get("text", "")).strip()]
+
     def detect(self, pcm: bytes) -> dict[str, float]:
         resp = self._post({"response_format": "verbose_json", "detect_language": "true"}, pcm)
         return {k: float(v) for k, v in resp.get("language_probabilities", {}).items()}
