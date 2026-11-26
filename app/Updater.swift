@@ -92,7 +92,9 @@ enum Updater {
         guard checksOn(defaults) else { return .off }
         guard let origin = git(root, ["remote", "get-url", "origin"]), origin.code == 0,
               repoKey(origin.out) == repoKey(expected) else { return .notAClone }
-        guard git(root, ["fetch", "--quiet", "origin", "main"])?.code == 0 else { return .failed("fetch") }
+        guard git(root, ["fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"])?.code == 0 else {
+            return .failed("fetch")
+        }
         guard let head = git(root, ["rev-parse", "HEAD"]), head.code == 0,
               let remote = git(root, ["rev-parse", "refs/remotes/origin/main"]), remote.code == 0 else { return .failed("rev-parse") }
         let ancestor = git(root, ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"])?.code == 0
@@ -117,8 +119,21 @@ enum Updater {
         return !status.out.isEmpty
     }
 
+    /// The script updates only the main branch.
+    static func onMain(_ root: URL) -> Bool {
+        git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"])?.out == "main"
+    }
+
+    /// Where setup.sh installs the app. The update opens that copy again, so a copy that runs from anywhere else would
+    /// stay old beside a new engine: it gets no update button press, only the way to do it by hand.
+    static var installedApp: URL { URL(fileURLWithPath: NSHomeDirectory() + "/Applications/CallCoach.app") }
+
+    static func isInstalled(_ bundle: URL, installed: URL = installedApp) -> Bool {
+        bundle.resolvingSymlinksInPath().standardizedFileURL.path == installed.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
     /// Copies the script out of the clone (the pull may replace it while it runs) and starts it on its own, so it
-    /// outlives the app. nil when it started, else what went wrong.
+    /// outlives the app. nil once the script says it is running (it writes RESULT.started first), else what went wrong.
     static func start(root: URL, app: URL = Bundle.main.bundleURL) -> String? {
         let fm = FileManager.default
         let copy = Paths.tools.appendingPathComponent("run/update.sh")
@@ -129,19 +144,24 @@ enum Updater {
             try fm.copyItem(at: root.appendingPathComponent("tools/update.sh"), to: copy)
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
             try? fm.removeItem(at: resultFile)
+            try? fm.removeItem(atPath: resultFile.path + ".started")
         } catch {
             return error.localizedDescription
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", #"nohup "$0" "$@" >> "$UPDATE_LOG" 2>&1 < /dev/null &"#,
+        process.arguments = ["-c", #""$0" "$@" >> "$UPDATE_LOG" 2>&1 < /dev/null &"#,
                              copy.path, root.path, app.path, String(getpid()), resultFile.path]
         var env = ProcessInfo.processInfo.environment
         env["UPDATE_LOG"] = logFile.path
         process.environment = env
         do { try process.run() } catch { return error.localizedDescription }
         process.waitUntilExit()
-        return process.terminationStatus == 0 ? nil : "bash exited with \(process.terminationStatus)"
+        for _ in 0..<30 {
+            if fm.fileExists(atPath: resultFile.path + ".started") { return nil }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return L("סקריפט העדכון לא התחיל", "the update script did not start")
     }
 
     /// The script's result, read once: the file is removed.
@@ -169,6 +189,16 @@ enum Updater {
          L("האפליקציה תיסגר, תוריד מ-GitHub את הגרסה החדשה (\(changes(found.count))), תתקין אותה ותיפתח שוב לבד. זה לוקח בערך דקה או שתיים. אם macOS יבקש שוב גישה למיקרופון או להקלטת שמע המערכת, צריך לאשר.",
            "The app closes, gets the new version from GitHub (\(changes(found.count))), installs it and opens again on its own. It takes a minute or two. If macOS asks again for Microphone or System Audio Recording access, allow it."),
          L("עדכן עכשיו", "Update now"), L("לא עכשיו", "Not now"))
+    }
+
+    static func branchText(_ root: URL) -> String {
+        L("התיקייה של CallCoach לא על הענף main, אז לא עדכנתי. התיקייה:\n\(root.path)",
+          "The CallCoach folder is not on the main branch, so nothing was updated. The folder:\n\(root.path)")
+    }
+
+    static func notInstalledText(_ bundle: URL, root: URL) -> String {
+        L("העדכון מתקין את CallCoach בתיקייה ~/Applications, והאפליקציה הזאת פתוחה מתיקייה אחרת:\n\(bundle.path)\nכדי לעדכן, מריצים בטרמינל את הפקודה cd \(root.path) && git pull && ./setup.sh ופותחים את CallCoach מהתיקייה ~/Applications.",
+          "The update installs CallCoach in ~/Applications, and this app runs from somewhere else:\n\(bundle.path)\nTo update, run cd \(root.path) && git pull && ./setup.sh in Terminal and open CallCoach from ~/Applications.")
     }
 
     static var inCallText: String {
@@ -199,6 +229,7 @@ enum Updater {
         case "branch": why = L("התיקייה לא על הענף main, אז שום דבר לא השתנה.", "The folder is not on the main branch, so nothing changed.")
         case "fetch": why = L("לא הצלחתי להוריד את העדכון מ-GitHub. כדאי לבדוק את החיבור ולנסות שוב.", "Could not get the update from GitHub. Check the connection and try again.")
         case "setup": why = L("ההתקנה נכשלה, אז התיקייה חזרה לגרסה הקודמת. הלוג: \(log)", "The install failed, so the folder went back to the previous version. The log: \(log)")
+        case "restore": why = L("ההתקנה נכשלה, וגם ההתקנה מחדש של הגרסה הקודמת. כדאי להריץ בטרמינל את ./setup.sh בתיקייה של CallCoach. הלוג: \(log)", "The install failed, and so did setting the previous version up again. Run ./setup.sh in the CallCoach folder in Terminal. The log: \(log)")
         case "running": why = L("האפליקציה לא נסגרה בזמן, אז העדכון לא רץ.", "The app did not close in time, so the update did not run.")
         default: why = L("משהו השתבש. הלוג: \(log)", "Something went wrong. The log: \(log)")
         }
@@ -228,16 +259,20 @@ enum Updater {
         let read = take(file)
         expect(read == Result(ok: false, step: "setup", from: "a", to: "b") && !FileManager.default.fileExists(atPath: file.path),
                "the result is read once \(String(describing: read))", &p)
-        let steps = ["changes", "diverged", "branch", "fetch", "setup", "running", "other"]
+        let steps = ["changes", "diverged", "branch", "fetch", "setup", "restore", "running", "other"]
         let notes = steps.map { resultNote(Result(ok: false, step: $0, from: "a", to: "a"), count: nil) }
             + [resultNote(Result(ok: true, step: "done", from: "a", to: "b"), count: 2), resultNote(Result(ok: true, step: "done", from: "a", to: "a"), count: 0)]
         let texts = notes.flatMap { [$0.title, $0.body] } + [menuTitle, checkTitle, foundNote.title, foundNote.body, inCallText,
-                                                               changesText(root), startFailedText("x")]
+                                                               changesText(root), startFailedText("x"), branchText(root),
+                                                               notInstalledText(installedApp, root: root)]
             + { let c = confirmText(found); return [c.title, c.body, c.update, c.cancel] }()
         let latin = texts.filter { $0.first.map { $0.isASCII } ?? true }
         expect(latin.isEmpty, "every text starts in Hebrew \(latin)", &p)
         expect(Set(notes.prefix(steps.count).map(\.body)).count == steps.count, "each failure says its own reason", &p)
         expect(resultNote(Result(ok: true, step: "done", from: "a", to: "b"), count: 2).body == "נכנסו 2 שינויים.", "the count after an update", &p)
+        let apps = URL(fileURLWithPath: "/Users/a/Applications/CallCoach.app")
+        expect(isInstalled(URL(fileURLWithPath: "/Users/a/Applications/./CallCoach.app/"), installed: apps)
+               && !isInstalled(URL(fileURLWithPath: "/Applications/CallCoach.app"), installed: apps), "only the copy setup.sh installs updates itself", &p)
         let script = root.appendingPathComponent("tools/update.sh").path
         expect(FileManager.default.isExecutableFile(atPath: script), "tools/update.sh is there and runs", &p)
         return p

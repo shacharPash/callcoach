@@ -49,6 +49,7 @@ def run(tmp_path, clone, setup="true"):
                    capture_output=True, timeout=60)
     times = opened.read_text().splitlines() if opened.exists() else []
     assert times == ["/Apps/CallCoach.app"], "the app is opened once, whatever happened"
+    assert Path(f"{result}.started").exists(), "the app can see the script started"
     return json.loads(result.read_text())
 
 
@@ -83,11 +84,23 @@ def test_commits_of_my_own_are_never_pulled_over(tmp_path, repos):
     assert git(clone, "rev-parse", "HEAD") == mine
 
 
-def test_a_failed_setup_puts_the_clone_back(tmp_path, repos):
+def test_a_failed_setup_puts_the_clone_back_and_sets_that_version_up_again(tmp_path, repos):
     clone, old, new = repos
-    result = run(tmp_path, clone, setup="false")
+    runs = tmp_path / "runs"
+    first_fails = tmp_path / "setup.sh"
+    first_fails.write_text(f'#!/bin/bash\ngit rev-parse HEAD >> "{runs}"\n[ "$(git rev-parse HEAD)" = "{old}" ]\n')
+    first_fails.chmod(0o755)
+    result = run(tmp_path, clone, setup=str(first_fails))
     assert result == {"ok": False, "step": "setup", "from": old, "to": new}
     assert git(clone, "rev-parse", "HEAD") == old and not (clone / "b.txt").exists()
+    assert runs.read_text().split() == [new, old], "setup.sh ran for the new version, then again for the old one"
+
+
+def test_a_setup_that_fails_for_the_old_version_too_says_so(tmp_path, repos):
+    clone, old, new = repos
+    result = run(tmp_path, clone, setup="false")
+    assert result == {"ok": False, "step": "restore", "from": old, "to": new}
+    assert git(clone, "rev-parse", "HEAD") == old
 
 
 def test_another_branch_is_left_alone(tmp_path, repos):
@@ -98,7 +111,9 @@ def test_another_branch_is_left_alone(tmp_path, repos):
     assert git(clone, "rev-parse", "HEAD") == old
 
 
-def test_an_up_to_date_clone_is_done_without_moving(tmp_path, repos):
+def test_an_up_to_date_clone_is_done_without_moving_or_setting_up(tmp_path, repos):
     clone, _, new = repos
     git(clone, "reset", "-q", "--hard", new)
-    assert run(tmp_path, clone) == {"ok": True, "step": "done", "from": new, "to": new}
+    marker = tmp_path / "setup-ran"
+    assert run(tmp_path, clone, setup=f"touch {marker}") == {"ok": True, "step": "done", "from": new, "to": new}
+    assert not marker.exists()

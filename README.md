@@ -49,7 +49,7 @@ The full guide, in Hebrew, is in [docs/guide.he.md](docs/guide.he.md). The desig
 
 ## Updates
 
-A minute after CallCoach opens, and once a day after that, it runs `git fetch` in your clone to see whether `main` on GitHub has new commits. That is all it sends. When there are, "עדכן את CallCoach…" shows at the top of the menu bar menu and one notification says so (never during a call: it waits for the call to end). Clicking it asks first, then the app closes, moves your clone forward (`git pull`, only when that is a straight move forward and never over changes of your own), runs `./setup.sh` again and opens again on its own, with a notification that says how it went. If `setup.sh` fails, the clone goes back to where it was. The log is in `~/.callcoach/logs/update.log`.
+A minute after CallCoach opens, and once a day after that, it runs `git fetch` in your clone to see whether `main` on GitHub has new commits. That is all it sends. When there are, "עדכן את CallCoach…" shows at the top of the menu bar menu and one notification says so (never during a call: it waits for the call to end). Clicking it asks first, then the app closes, moves your clone forward (`git pull`, only when that is a straight move forward and never over changes of your own), runs `./setup.sh` again and opens again on its own, with a notification that says how it went. If `setup.sh` fails, the clone goes back to where it was and `setup.sh` runs once more for that version. The log is in `~/.callcoach/logs/update.log`.
 
 Turn the check off with "בדוק עדכונים" in the same menu. A folder that is not a clone of this repo is never checked. To update by hand instead:
 

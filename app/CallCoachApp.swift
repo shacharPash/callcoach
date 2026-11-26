@@ -312,20 +312,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     @objc func updateFromMenu() { confirmUpdate() }
 
-    /// Off the main thread: git talks to GitHub. The menu and the notification follow what it found.
-    func checkForUpdate() {
+    /// A call is on or starting: no update now.
+    var busy: Bool { state.inCall || state.starting }
+
+    /// Off the main thread: git talks to GitHub. The menu and the notification follow what it found; `confirm` asks to
+    /// update right after, for a click on the notification when the app has only just opened.
+    func checkForUpdate(confirm: Bool = false) {
         let defaults = state.defaults
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let outcome = Updater.check(root: Paths.root, defaults: defaults)
-            DispatchQueue.main.async { [weak self] in self?.updateFound(outcome) }
+            DispatchQueue.main.async { [weak self] in
+                self?.updateFound(outcome)
+                if confirm { self?.confirmUpdate() }
+            }
         }
     }
 
     func updateFound(_ outcome: Updater.Outcome) {
+        guard Updater.checksOn(state.defaults) else {
+            update = nil
+            updateNotePending = false
+            return
+        }
         switch outcome {
         case .ahead(let found):
             update = found
-            switch Updater.notice(found, notified: state.defaults.string(forKey: Updater.notifiedKey), inCall: state.inCall) {
+            switch Updater.notice(found, notified: state.defaults.string(forKey: Updater.notifiedKey), inCall: busy) {
             case .post: postUpdateNote(found)
             case .later: updateNotePending = true
             case .none: break
@@ -348,7 +360,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     /// Asks first; changes of your own in the folder stop it before the app quits.
     func confirmUpdate() {
         guard let update else { return }
-        if state.inCall { return alert(Updater.inCallText) }
+        if busy { return alert(Updater.inCallText) }
+        if !Updater.isInstalled(Bundle.main.bundleURL) {
+            return alert(Updater.notInstalledText(Bundle.main.bundleURL, root: Paths.root))
+        }
+        if !Updater.onMain(Paths.root) { return alert(Updater.branchText(Paths.root)) }
         if Updater.localChanges(Paths.root) { return alert(Updater.changesText(Paths.root)) }
         let text = Updater.confirmText(update)
         NSApp.activate()
@@ -358,7 +374,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         ask.addButton(withTitle: text.update)
         ask.addButton(withTitle: text.cancel)
         ask.window.sharingType = WindowHost.sharing
-        guard ask.runModal() == .alertFirstButtonReturn, !state.inCall else { return }
+        guard ask.runModal() == .alertFirstButtonReturn else { return }
+        if busy { return alert(Updater.inCallText) }
         if let error = Updater.start(root: Paths.root) { return alert(Updater.startFailedText(error)) }
         AppLog.write("update: started, quitting")
         NSApp.terminate(nil)
@@ -462,7 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         if model.phase != lastPhase {
             lastPhase = model.phase
             if model.phase != .active { contextWindow?.close() }
-            if updateNotePending, !state.inCall, let update { postUpdateNote(update) }
+            if updateNotePending, !busy, let update { postUpdateNote(update) }
         }
         if model.phase == .active && state.idlePanel { state.idlePanel = false }
         if Self.panelShown(phase: model.phase, visible: model.visible, idle: state.idlePanel) {
@@ -549,7 +566,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let info = response.notification.request.content.userInfo
         let call = info["call"] as? String
         DispatchQueue.main.async {
-            if info["update"] as? Bool == true { self.confirmUpdate() }
+            if info["update"] as? Bool == true {
+                if self.update == nil { self.checkForUpdate(confirm: true) } else { self.confirmUpdate() }
+            }
             else if info["panel"] as? Bool == true { self.state.setVisible(true) } else { self.openCall(call) }
             done()
         }
@@ -611,7 +630,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         menu.addItem(info(Self.statusLine(model, starting: state.starting)))
         menu.addItem(.separator())
         if update != nil {
-            menu.addItem(item(Updater.menuTitle, state.inCall ? nil : #selector(updateFromMenu), MenuSymbol.update))
+            menu.addItem(item(Updater.menuTitle, busy ? nil : #selector(updateFromMenu), MenuSymbol.update))
             menu.addItem(.separator())
         }
         if state.inCall {
