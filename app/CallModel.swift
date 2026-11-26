@@ -204,6 +204,9 @@ struct CallModel: Equatable {
     var translations: [Int: String] = [:]
     /// The call started as a recording (the start's `record_only`); the chips say whether the coach is on now.
     var recordOnly = false
+    /// The call app the watch started this call for ("הקלט שיחות אוטומטית"); nil for a call started by hand. Such a
+    /// call starts with the panel hidden and stops when that app lets go of the mic and the sound.
+    var autoApp: String?
     /// The other side's open sentence, until its line comes or 8 s pass with no update.
     var partial: Partial?
     var partialUntil = 0.0

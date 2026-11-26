@@ -92,6 +92,15 @@ final class AppState: ObservableObject {
         guard Permissions.microphone == .notDetermined else { return go() }
         Permissions.requestMicrophone { _ in go() }
     }
+    /// Reads which call apps take the mic and play sound, off the main thread; the self-check replaces it.
+    var readUses: (@escaping ([AudioUse]) -> Void) -> Void = AppState.readCallApps
+    /// The watch's clock; the self-check moves its own.
+    var clock: () -> Double = { Date().timeIntervalSince1970 }
+    private var watch = CallWatch()
+    /// The watch stopped the call that is ending, so it does not wait for the call app to let go.
+    private var stoppedByWatch = false
+    private var reading = false
+    private var lastWatch = -Double.infinity
     private var engine: EngineChannel?
     private var retired: [ObjectIdentifier: EngineChannel] = [:]
     private var timer: Timer?
@@ -171,6 +180,7 @@ final class AppState: ObservableObject {
     }
 
     private func handle(_ event: Event) {
+        let hadCall = inCall || starting
         update { $0.apply(event, now: now) }.forEach(send)
         switch event {
         case .hello where model.fatal != nil:
@@ -182,6 +192,7 @@ final class AppState: ObservableObject {
             reloadBriefs()
             refreshRecap()
         case .stopped:
+            if hadCall { callEnded(crashed: false) }
             rememberChips()
             retire()
             starting = false
@@ -246,6 +257,7 @@ final class AppState: ObservableObject {
     private func exited(clean: Bool) {
         engine = nil
         let wasCall = inCall
+        if wasCall || starting { callEnded(crashed: wasCall && !clean) }
         let folder = model.folder
         model.phase = .ended
         if wasCall { rememberChips() }
@@ -280,6 +292,67 @@ final class AppState: ObservableObject {
 
     private func tick() {
         update { $0.tick(now: now) }.forEach(send)
+        watchIfDue()
+    }
+
+    private static let watchQueue = DispatchQueue(label: "app.callcoach.watch")
+    private static let audioUses = AudioUses()
+
+    static func readCallApps(_ done: @escaping ([AudioUse]) -> Void) {
+        watchQueue.async {
+            let uses = audioUses.now()
+            DispatchQueue.main.async { done(uses) }
+        }
+    }
+
+    /// The watch runs while "הקלט שיחות אוטומטית" is on, and in a call it started even after the switch went off, so
+    /// that call still ends with its call app. Never for a replayed stream.
+    var watchWanted: Bool {
+        stream == nil && (Settings.autoRecord(defaults) || (model.autoApp != nil && inCall))
+    }
+
+    var watchDoing: CallWatch.Doing {
+        if model.phase == .active, let app = model.autoApp { return .auto(app) }
+        return inCall || starting ? .busy : .idle
+    }
+
+    /// A read at most once a second, and one at a time.
+    private func watchIfDue() {
+        let t = clock()
+        guard watchWanted, !reading, t - lastWatch >= 1 else { return }
+        lastWatch = t
+        reading = true
+        readUses { [weak self] uses in
+            guard let self else { return }
+            self.reading = false
+            self.watchTick(uses)
+        }
+    }
+
+    /// One second of the watch: what the call apps do now against what the app is doing.
+    func watchTick(_ uses: [AudioUse]) {
+        guard watchWanted else { return }
+        switch watch.step(uses, doing: watchDoing, now: clock()) {
+        case .start(let app): startRecording(auto: app)
+        case .stop:
+            stoppedByWatch = true
+            stop()
+        case .none: break
+        }
+    }
+
+    /// A call ended, or did not begin: the watch waits for the call app to let go, unless it stopped the call itself or
+    /// the engine fell in the middle of it, when the rest of a call still on is recorded anew.
+    private func callEnded(crashed: Bool) {
+        watch.ended(pause: !(stoppedByWatch || crashed))
+        stoppedByWatch = false
+    }
+
+    /// The menu's "הקלט שיחות אוטומטית". Turned on, the watch starts afresh, so a call already on is recorded too.
+    func toggleAutoRecord() {
+        let on = !Settings.autoRecord(defaults)
+        Settings.setAutoRecord(on, defaults)
+        if on { watch = CallWatch() }
     }
 
     func tickForCheck() {
@@ -303,22 +376,32 @@ final class AppState: ObservableObject {
         start(StartFields(brief: brief, text: topic, level: Settings.defaultLevel))
     }
 
-    /// "הקלטה בלבד": the recording and the live transcript, with no agent, no summary and no brief.
-    func startRecording() {
+    /// "הקלטה בלבד": the recording and the live transcript, with no agent, no summary and no brief. Started by the
+    /// watch for a call app, it has the app's name as its title when the field gives none, and an engine that does not
+    /// start makes the watch wait for that call to end instead of trying again.
+    func startRecording(auto app: String? = nil) {
         guard !inCall, !starting else { return }
         ensureEngine()
-        guard engine != nil else { return }
+        guard engine != nil else {
+            if app != nil { watch.ended(pause: true) }
+            return
+        }
         var fields = StartFields(brief: nil, text: topic, level: Settings.defaultLevel)
         fields.recordOnly = true
-        start(fields)
+        if let app, fields.title.isEmpty { fields.title = app }
+        start(fields, auto: app)
     }
 
     /// Every call starts recording and hearing me. A call with the coach starts with the AI chips of the last call
     /// that had it, a recording with none and folded to its strip; the transcript chip is as the last call left it.
     /// The start carries the sections of those chips, since a call with the coach can start without questions or terms.
-    func start(_ fields: StartFields) {
+    /// A call the watch started for a call app starts with the panel hidden.
+    func start(_ fields: StartFields, auto app: String? = nil) {
         let replay = ProcessInfo.processInfo.environment["CALLCOACH_REPLAY"]
         starting = true
+        stoppedByWatch = false
+        model.autoApp = app
+        model.visible = app == nil
         model.recordOnly = fields.recordOnly
         model.recentLines = []
         model.translations = [:]

@@ -29,6 +29,7 @@ enum SelfCheck {
         ("brief page", briefPageChecks), ("settings", SettingsRoute.checks),
         ("call page", callPageChecks),
         ("call watch", watchChecks),
+        ("auto record", autoChecks),
     ]
 
     static func run(root: URL) -> Bool {

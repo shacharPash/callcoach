@@ -63,6 +63,17 @@ enum Settings {
         defaults.set(on, forKey: dockKey)
     }
 
+    static let autoRecordKey = "autoRecord"
+
+    /// "הקלט שיחות אוטומטית": a call app that takes the mic starts a recording. Off by default, as in CallRec.
+    static func autoRecord(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: autoRecordKey)
+    }
+
+    static func setAutoRecord(_ on: Bool, _ defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: autoRecordKey)
+    }
+
     static let exportKey = "exportDir"
 
     /// The folder a copy of every finished call goes to (its summary and transcript, never the audio), such as one

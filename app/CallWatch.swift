@@ -218,4 +218,120 @@ extension SelfCheck {
                && CallApps.name("com.apple.Music") == nil && CallApps.name("") == nil, "the call apps by bundle id", &p)
         return p
     }
+
+    static func autoChecks(_ root: URL) -> [String] {
+        var p: [String] = []
+        let fm = FileManager.default
+        let tools = fm.temporaryDirectory.appendingPathComponent("callcoach-auto-\(getpid())")
+        try? fm.createDirectory(at: tools, withIntermediateDirectories: true)
+        let suite = tools.appendingPathComponent("settings").path
+        let defaults = UserDefaults(suiteName: suite)!
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? fm.removeItem(at: tools)
+        }
+        let state = AppState(accounts: AccountStore(tools: tools), stream: nil, speed: 1)
+        state.data = tools.appendingPathComponent("data")
+        state.defaults = defaults
+        state.askMicrophone = { $0() }
+        state.readUses = { _ in }
+        var t = 0.0
+        state.clock = { t }
+        var channels: [FakeChannel] = []
+        var fatals: [String] = []
+        state.onFatal = { fatals.append($0) }
+        var engineFails = false
+        state.makeChannel = {
+            if engineFails { throw CocoaError(.fileNoSuchFile) }
+            let channel = FakeChannel()
+            channels.append(channel)
+            return channel
+        }
+        let zoom = [AudioUse(app: "Zoom", mic: true, sound: true)]
+        func seconds(_ n: Int, _ uses: [AudioUse]) {
+            for _ in 0..<n {
+                state.watchTick(uses)
+                t += 1
+            }
+        }
+        func starts(_ channel: FakeChannel?) -> [StartFields] {
+            (channel?.sent ?? []).compactMap { if case .start(let f, _) = $0 { return f } else { return nil } }
+        }
+        func stops(_ channel: FakeChannel) -> [Command] { channel.sent.filter { if case .stop = $0 { return true } else { return false } } }
+        func ready(_ channel: FakeChannel) {
+            channel.emit(#"{"type": "ready", "folder": "/x/calls/2026-11-25_1000_general", "replay_t0": null}"#)
+        }
+        let stopped = #"{"type": "stopped"}"#
+
+        expect(!Settings.autoRecord(defaults) && !state.watchWanted, "off by default, so nothing is read", &p)
+        seconds(5, zoom)
+        expect(channels.isEmpty, "with the switch off a call app starts nothing", &p)
+        state.toggleAutoRecord()
+        expect(Settings.autoRecord(defaults) && state.watchWanted, "the menu turns it on", &p)
+        seconds(3, zoom)
+        expect(channels.isEmpty, "nothing before three seconds", &p)
+        seconds(1, zoom)
+        let first = starts(channels.first).first
+        expect(channels.count == 1 && first?.recordOnly == true && first?.title == "Zoom" && first?.brief == ""
+               && state.model.autoApp == "Zoom" && !state.model.visible && state.model.folded,
+               "three seconds of Zoom start a recording named Zoom, with the panel hidden \(String(describing: first))", &p)
+        ready(channels[0])
+        expect(state.model.phase == .active && channels[0].sent.last == .setVisibility(false)
+               && !AppDelegate.panelShown(phase: state.model.phase, visible: state.model.visible, idle: state.idlePanel),
+               "the panel does not show and the engine hears it is not seen", &p)
+        state.toggleCoach()
+        expect(state.model.chips.coach, "the coach is turned on by hand in the same call", &p)
+        seconds(2, zoom)
+        seconds(5, [])
+        expect(stops(channels[0]).isEmpty, "five seconds without Zoom do not stop it yet", &p)
+        seconds(1, [])
+        expect(stops(channels[0]) == [.stop(summary: false)], "more than five stop it with no summary, coach or not", &p)
+        seconds(3, [])
+        expect(stops(channels[0]).count == 1, "the stop is sent once", &p)
+        channels[0].emit(stopped)
+        seconds(4, zoom)
+        expect(channels.count == 2 && starts(channels[1]).first?.title == "Zoom", "the next call starts as the first did", &p)
+
+        ready(channels[1])
+        state.stop()
+        channels[1].emit(stopped)
+        seconds(6, zoom)
+        expect(channels.count == 2, "after a stop by hand Zoom still on starts nothing", &p)
+        seconds(1, [])
+        seconds(4, zoom)
+        expect(channels.count == 3, "once Zoom let go, its next call is recorded", &p)
+        ready(channels[2])
+        state.stop()
+        channels[2].emit(stopped)
+        seconds(1, [])
+
+        state.startRecording()
+        expect(channels.count == 4 && state.model.autoApp == nil && state.model.visible && starts(channels[3]).first?.title == "",
+               "a recording by hand has the panel and no call app", &p)
+        ready(channels[3])
+        seconds(10, [])
+        seconds(5, zoom)
+        expect(stops(channels[3]).isEmpty && channels.count == 4, "the watch leaves a call by hand alone", &p)
+        channels[3].emit(stopped)
+        seconds(1, [])
+
+        state.topic = "דנה מ-Acme"
+        seconds(4, zoom)
+        expect(starts(channels[4]).first?.title == "דנה מ-Acme", "the field's text is the title when there is one", &p)
+        ready(channels[4])
+        state.toggleAutoRecord()
+        expect(!Settings.autoRecord(defaults) && state.watchWanted, "turned off in a call it started, the watch still runs", &p)
+        seconds(2, zoom)
+        seconds(6, [])
+        expect(stops(channels[4]) == [.stop(summary: false)], "so that call still ends with Zoom", &p)
+        channels[4].emit(stopped)
+        expect(!state.watchWanted, "after it nothing is read", &p)
+
+        state.toggleAutoRecord()
+        engineFails = true
+        seconds(4, zoom)
+        seconds(10, zoom)
+        expect(fatals.count == 1 && channels.count == 5, "an engine that does not start is told once, not every three seconds", &p)
+        return p
+    }
 }
