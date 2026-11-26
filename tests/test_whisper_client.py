@@ -30,14 +30,15 @@ class Handler(BaseHTTPRequestHandler):
         self.server.seen.append(fields)
         if fields.get("detect_language") == "true":
             resp = {"language": "english", "language_probabilities": {"en": 0.9, "he": 0.05}}
-        elif fields.get("response_format") == "verbose_json":
-            resp = {"segments": [{"start": 0.5, "end": 2.25, "text": " שלום "}, {"start": 3, "end": 4, "text": "  "},
-                                 {"start": 4.0, "end": 6.5, "text": "מה שלומך"}]}
+        elif fields.get("response_format") == "srt":
+            resp = None
+            srt = ("" if self.server.silent else "1\n00:00:00,500 --> 00:00:02,250\n שלום \n\n2\n00:00:03,000 --> "
+                   "00:00:04,000\n  \n\n3\n00:01:04,000 --> 00:01:06,500\nמה\nשלומך\n\n")
         else:
             resp = {"text": " שלום עולם \n"}
-        data = json.dumps(resp).encode()
+        data = json.dumps(resp).encode() if resp is not None else srt.encode()
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json" if resp is not None else "application/x-subrip")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -50,6 +51,7 @@ class Handler(BaseHTTPRequestHandler):
 def server():
     srv = HTTPServer(("127.0.0.1", 0), Handler)
     srv.seen = []
+    srv.silent = False
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv
     srv.shutdown()
@@ -61,9 +63,15 @@ def client(srv):
 
 def test_segments_come_with_their_times_and_without_empty_ones(server):
     got = client(server).segments(b"\x00\x00" * 16000, "he", prompt="Okta, Acme")
-    assert got == [(0.5, 2.25, "שלום"), (4.0, 6.5, "מה שלומך")]
+    assert got == [(0.5, 2.25, "שלום"), (64.0, 66.5, "מה שלומך")]
     sent = server.seen[-1]
     assert sent["no_timestamps"] == "false" and sent["language"] == "he" and sent["prompt"] == "Okta, Acme"
+    assert sent["response_format"] == "srt"
+
+
+def test_segments_of_audio_without_speech_are_none(server):
+    server.silent = True
+    assert client(server).segments(bytes(32000), "he") == []
 
 
 def test_transcribe_sends_the_language_and_a_wav(server):

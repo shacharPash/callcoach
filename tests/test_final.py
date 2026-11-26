@@ -62,15 +62,24 @@ def lines_of(folder):
 
 
 def test_each_side_keeps_the_language_of_its_live_lines_changing_halfway_between_them():
-    lines = [line(1, "me", "he", "שלום", 1, 3), line(2, "me", "en", "hello", 9, 11), line(3, "me", "en", "ok", 20, 21)]
+    lines = [line(1, "me", "he", "שלום לכולם מה נשמע", 1, 3), line(2, "me", "en", "hello and welcome to all", 9, 11),
+             line(3, "me", "en", "ok", 20, 21)]
     assert runs(lines, STARTED, 60.0, "he") == [(0.0, 6.0, "he"), (6.0, 60.0, "en")]
     assert runs([], STARTED, 60.0, "en") == [(0.0, 60.0, "en")]
 
 
-def test_a_long_stretch_is_cut_at_the_widest_silence_near_its_end():
-    spans = [(0, 100), (101, 200), (205, 280), (281, 400), (402, 700)]
-    assert pieces([(0.0, 700.0, "he")], spans, longest=300) == [(0.0, 202.5, "he"), (202.5, 401.0, "he"), (401.0, 700.0, "he")]
-    assert pieces([(0.0, 500.0, "en")], [], longest=300) == [(0.0, 300.0, "en"), (300.0, 500.0, "en")]
+def test_a_short_live_line_does_not_change_the_language():
+    lines = [line(1, "them", "he", "אז מה אתם אומרים על זה", 1, 3), line(2, "them", "en", "Thank you.", 9, 10),
+             line(3, "them", "en", "Mm-hmm", 20, 21), line(4, "them", "he", "בסדר אז נתקדם עם זה", 30, 33)]
+    assert runs(lines, STARTED, 60.0, "en") == [(0.0, 60.0, "he")]
+    assert runs(lines[1:3], STARTED, 60.0, "he") == [(0.0, 60.0, "he")]
+
+
+def test_a_side_is_sent_turn_by_turn_with_a_little_audio_around_each():
+    spans = [(2, 5), (5.5, 9), (20, 24), (24.5, 30), (31, 40), (60, 62)]
+    assert pieces([(0.0, 50.0, "he"), (50.0, 70.0, "en")], spans, longest=20) == [
+        (1.0, 10.0, "he"), (19.0, 30.5, "he"), (30.5, 41.0, "he"), (59.0, 63.0, "en")]
+    assert pieces([(0.0, 500.0, "en")], []) == []
 
 
 def test_lines_of_one_speaker_that_follow_each_other_are_one_line():
@@ -92,7 +101,7 @@ def test_the_final_lines_replace_the_live_ones_and_keep_the_marks(tmp_path):
             line(2, "me", "he", "נשמע", 2.2, 3), line(3, "them", "he", "הכל טוב", 4, 6),
             {"kind": "hearing", "on": False, "t": STARTED + 7}]
     folder = make_call(tmp_path, live, meta={"glossary": ["Okta"]}, terms=["Acme", "Okta"])
-    servers = Servers([(1.0, 3.0, "שלום מה נשמע"), (4.0, 6.0, "הכל טוב ואצלך")], [(4.0, 6.0, "הכל טוב ואצלך")])
+    servers = Servers([(1.0, 3.0, "שלום מה נשמע"), (2.5, 3.9, "הכל טוב ואצלך")], [(1.0, 3.0, "הכל טוב ואצלך")])
     result = final_pass(folder, folder.parents[1], servers=servers, read_channel=silence(10), busy=lambda: False)
     assert result.ok and result.lines == 2
     rows = lines_of(folder)
@@ -100,7 +109,7 @@ def test_the_final_lines_replace_the_live_ones_and_keep_the_marks(tmp_path):
     got = [(r["channel"], r["text"], r["t_start"], r["speech_end"]) for r in rows if r["kind"] == "line"]
     assert got == [("me", "שלום מה נשמע", 1001.0, 1003.0), ("them", "הכל טוב ואצלך", 1004.0, 1006.0)]
     assert [json.loads(l) for l in (folder / "lines.live.jsonl").read_text().splitlines()] == live
-    assert [(lang, secs) for lang, secs, _ in servers.asked] == [("he", 10.0), ("he", 10.0)]
+    assert [(lang, secs) for lang, secs, _ in servers.asked] == [("he", 4.0), ("he", 4.0)]
     assert {prompt for *_, prompt in servers.asked} == {"Okta, Acme"} and servers.stops >= 1
     assert json.loads((folder / "meta.json").read_text())["final_transcript"]["lines"] == 2
 
@@ -112,10 +121,29 @@ def test_my_line_that_only_repeats_the_other_side_is_dropped_and_a_short_answer_
     assert [(r["channel"], r["text"]) for r in lines_of(folder)] == [("them", "נשלח את זה ביום ראשון"), ("me", "כן")]
 
 
+def test_while_they_talk_my_line_stays_only_where_the_live_pass_heard_me(tmp_path):
+    live = [line(1, "me", "he", "רגע אני שואל", 20, 22), line(2, "them", "en", "we ship on monday", 1, 30)]
+    folder = make_call(tmp_path, live)
+    servers = Servers([(1.0, 30.0, "we ship on monday and then the rest")],
+                      [(5.0, 7.0, "they ship something"), (20.5, 22.5, "רגע אני שואל משהו"), (40.0, 41.0, "תודה")])
+    assert final_pass(folder, folder.parents[1], servers=servers, read_channel=silence(50), busy=lambda: False).ok
+    assert [(r["channel"], r["text"]) for r in lines_of(folder)] == [
+        ("them", "we ship on monday and then the rest"), ("me", "רגע אני שואל משהו"), ("me", "תודה")]
+
+
+def test_a_live_sentence_the_final_pass_did_not_hear_stays_and_a_short_one_does_not():
+    lines = [line(1, "me", "he", "האמת שזה לא נכון בכלל", 10, 14), line(2, "me", "he", "כן כן", 16, 17),
+             line(3, "them", "he", "אז נדבר על זה מחר", 20, 22), line(4, "me", "he", "שלום לכולם מה נשמע", 1, 3),
+             line(5, "me", "he", "ואחר כך נראה מה קורה", 30, 33)]
+    segments = [(0.5, 9.0, "me", "he", "שלום לכולם מה שלומכם"), (20.0, 22.0, "them", "he", "אז נדבר מחר"),
+                (29.0, 34.0, "me", "he", "ואז נראה")]
+    assert final.skipped(lines, segments, STARTED) == [(10.0, 14.0, "me", "he", "האמת שזה לא נכון בכלל")]
+
+
 def test_a_run_again_starts_from_the_live_lines(tmp_path):
     folder = make_call(tmp_path, [line(1, "them", "en", "hello there", 1, 2)])
     for text in ("hello there friend", "hello there again"):
-        servers = Servers([], [(1.0, 2.0, text)])
+        servers = Servers([(1.0, 2.0, text)])
         assert final_pass(folder, folder.parents[1], servers=servers, read_channel=silence(5), busy=lambda: False).ok
     assert [r["text"] for r in lines_of(folder)] == ["hello there again"]
     assert [json.loads(l)["text"] for l in (folder / "lines.live.jsonl").read_text().splitlines()] == ["hello there"]
@@ -124,7 +152,7 @@ def test_a_run_again_starts_from_the_live_lines(tmp_path):
 def test_it_waits_while_another_call_records(tmp_path):
     folder = make_call(tmp_path, [line(1, "them", "en", "hello", 1, 2)])
     waits, busy = [], iter([True, True, False, False])
-    servers = Servers([], [(1.0, 2.0, "hello")])
+    servers = Servers([(1.0, 2.0, "hello")])
     assert final_pass(folder, folder.parents[1], servers=servers, read_channel=silence(5), busy=lambda: next(busy),
                       sleep=waits.append).ok
     assert waits == [final.WAIT_S, final.WAIT_S] and servers.stops >= 2

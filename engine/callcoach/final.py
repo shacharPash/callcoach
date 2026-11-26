@@ -1,13 +1,16 @@
-"""The final transcript of a finished call: each side of call.m4a transcribed again in full once the call is over,
-with the call's names and terms as the prompt. Whisper then hears every sentence with the ones around it, rather than
-in the live pieces of about 8 s, so a word cut at the edge of a piece comes out whole, and lines of one speaker that
-follow each other are joined into one.
+"""The final transcript of a finished call: each turn of each side of call.m4a transcribed again whole once the call
+is over, with the call's names and terms as the prompt. Whisper then hears a turn's sentences together, rather than in
+the live pieces of about 8 s, so a word cut at the edge of a piece comes out whole, and lines of one speaker that
+follow each other are joined into one. A turn is at most one Whisper window (PIECE_S): in a longer piece Whisper
+sometimes skips a sentence.
 
 The live lines stay in lines.live.jsonl. lines.jsonl gets the final ones beside the call's marks and notes, so the
 call page, transcript.md, a summary or follow-up written later and the copy for the export folder all read them. Each
 stretch of a side keeps the language its live lines had. It runs in a process of its own after the call, waits while
 another call is recording, and changes nothing when it fails. A call whose mic still had the other side in it (no
-echo cancellation) keeps its live lines, which were checked for echo as they came."""
+echo cancellation) keeps its live lines, which were checked for echo as they came. Where the other side was talking, a
+line of mine is kept only where the live pass heard me too, so echo that the live checks dropped stays out. A live line
+of LANG_WORDS words or more where the final pass found nothing on its side stays as it was."""
 from __future__ import annotations
 
 import json
@@ -25,10 +28,14 @@ from callcoach.textfilter import clean, repeats
 from callcoach.transcriber import glossary_prompt
 
 LIVE_NAME = "lines.live.jsonl"
-PIECE_S = 300.0  # longest stretch sent at once, so a call that starts meanwhile waits for one piece at most
+PIECE_S = 28.0  # one Whisper window at most, so it never skips ahead inside a piece
+TURN_GAP_S = 1.5  # live lines of one side closer than this are one turn
+PAD_S = 1.0  # audio around a turn, no further than halfway to the next one
 JOIN_GAP_S = 2.0  # lines of one speaker this close, with nobody between, are one line
 JOIN_MAX_S = 40.0
 ECHO_WINDOW_S = 2.0
+LIVE_NEAR_S = 1.0  # a line of mine this close to one of my live lines was heard live too
+LANG_WORDS = 4  # a shorter live line ("Thank you.", "Mm-hmm") is too short to tell its language
 WAIT_S = 20.0
 
 
@@ -69,10 +76,20 @@ def read_entries(path: Path) -> list[dict]:
     return entries
 
 
+def most_words(lines: list[dict], default: str) -> str:
+    """The language most of the lines' words were in."""
+    words: dict[str, int] = {}
+    for e in lines:
+        words[e["lang"]] = words.get(e["lang"], 0) + len(e["text"].split())
+    return max(sorted(words), key=words.get) if words else default
+
+
 def runs(lines: list[dict], started: float, duration: float, default: str) -> list[tuple[float, float, str]]:
     """One side's stretches of one language, in seconds from the start of the recording: each change of language
-    between its live lines is put halfway between them. A side with no lines is one stretch in `default`."""
-    spans = sorted((e["t_start"] - started, e["speech_end"] - started, e["lang"]) for e in lines)
+    between its live lines of LANG_WORDS words or more is put halfway between them. A side with no such lines is one
+    stretch in `default`."""
+    spans = sorted((e["t_start"] - started, e["speech_end"] - started, e["lang"]) for e in lines
+                   if len(e["text"].split()) >= LANG_WORDS)
     if not spans:
         return [(0.0, duration, default)]
     out = [[0.0, duration, spans[0][2]]]
@@ -86,20 +103,30 @@ def runs(lines: list[dict], started: float, duration: float, default: str) -> li
 
 def pieces(stretches: list[tuple[float, float, str]], spans: list[tuple[float, float]],
            longest: float = PIECE_S) -> list[tuple[float, float, str]]:
-    """The stretches cut to `longest` at most, each cut at the widest silence between live lines in the last part of
-    the piece, so no word is cut in two."""
+    """The turns of one side, from its live lines: lines with less than TURN_GAP_S between them, cut at their widest
+    silence to `longest` at most, with PAD_S of audio around each. Whisper hears each turn whole, not in the live
+    pieces of about 8 s; a stretch with no live line has nothing to send."""
     out = []
-    spans = sorted(spans)
     for a, b, lang in stretches:
-        start = a
-        while b - start > longest:
-            lo, hi = start + longest / 2, start + longest
-            gaps = [(s2 - e1, (e1 + s2) / 2) for (_, e1), (s2, _) in zip(spans, spans[1:]) if lo < (e1 + s2) / 2 < hi]
-            cut = max(gaps)[1] if gaps else hi
-            out.append((start, cut, lang))
-            start = cut
-        out.append((start, b, lang))
+        groups: list[list[tuple[float, float]]] = []
+        for s, e in sorted(x for x in spans if a <= (x[0] + x[1]) / 2 < b):
+            if groups and s - groups[-1][-1][1] < TURN_GAP_S:
+                groups[-1].append((s, e))
+            else:
+                groups.append([(s, e)])
+        turns = [t for g in groups for t in _split(g, longest - 2 * PAD_S)]
+        for i, (s, e) in enumerate(turns):
+            lo = max(a, s - PAD_S, (turns[i - 1][1] + s) / 2 if i else a)
+            hi = min(b, e + PAD_S, (e + turns[i + 1][0]) / 2 if i + 1 < len(turns) else b)
+            out.append((lo, hi, lang))
     return out
+
+
+def _split(group: list[tuple[float, float]], longest: float) -> list[tuple[float, float]]:
+    if group[-1][1] - group[0][0] <= longest or len(group) == 1:
+        return [(group[0][0], group[-1][1])]
+    cut = max(range(1, len(group)), key=lambda k: group[k][0] - group[k - 1][1])
+    return _split(group[:cut], longest) + _split(group[cut:], longest)
 
 
 def channel_pcm(audio: Path, index: int) -> bytes:
@@ -186,8 +213,7 @@ def final_pass(folder: Path, data: Path, *, servers=None, read_channel: Callable
         pass
     glossary = tuple(dict.fromkeys(terms))
     prompt = glossary_prompt(glossary)
-    langs = [e["lang"] for e in lines]
-    default = max(sorted(set(langs)), key=langs.count) if langs else "he"
+    default = most_words(lines, "he")
     busy = busy or (lambda: other_call_recording(data, folder))
     servers = servers or Servers(folder / "logs")
     t0 = clock()
@@ -199,7 +225,8 @@ def final_pass(folder: Path, data: Path, *, servers=None, read_channel: Callable
             duration = len(pcm) / SAMPLE_BYTES / RATE
             mine = [e for e in lines if e.get("channel") == channel]
             spans = [(e["t_start"] - started, e["speech_end"] - started) for e in mine]
-            work += [(lang, a, b, channel, pcm) for a, b, lang in pieces(runs(mine, started, duration, default), spans)]
+            stretches = runs(mine, started, duration, most_words(mine, default))
+            work += [(lang, a, b, channel, pcm) for a, b, lang in pieces(stretches, spans)]
         for lang, a, b, channel, pcm in sorted(work, key=lambda w: (w[0] != default, w[0], w[3], w[1])):
             while busy():
                 servers.stop()
@@ -215,10 +242,11 @@ def final_pass(folder: Path, data: Path, *, servers=None, read_channel: Callable
     finally:
         servers.stop()
     theirs = [(s, e, t) for s, e, ch, _, t in segments if ch == THEM]
-    segments = [seg for seg in segments if seg[2] != ME or not repeats(
-        seg[4], [t for s, e, t in theirs if s < seg[1] + ECHO_WINDOW_S and e > seg[0] - ECHO_WINDOW_S])]
+    heard = [(e["t_start"] - started, e["speech_end"] - started) for e in lines if e.get("channel") == ME]
+    segments = [seg for seg in segments if seg[2] != ME or _mine(seg[0], seg[1], seg[4], theirs, heard)]
+    joined = sorted(join(segments) + skipped(lines, segments, started))
     final = [Line(n, n, ch, lang, text, started + a, started + b, started + b)
-             for n, (a, b, ch, lang, text) in enumerate(join(segments), 1)]
+             for n, (a, b, ch, lang, text) in enumerate(joined, 1)]
     if lines and not final:
         return FinalResult(False, reason="the final pass found no speech")
     if not live.exists():
@@ -227,6 +255,30 @@ def final_pass(folder: Path, data: Path, *, servers=None, read_channel: Callable
     _replace(current, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
     update_meta(folder, final_transcript={"lines": len(final), "seconds": round(clock() - t0, 1)})
     return FinalResult(True, lines=len(final))
+
+
+def skipped(lines: list[dict], segments: list[tuple[float, float, str, str, str]],
+            started: float) -> list[tuple[float, float, str, str, str]]:
+    """The live lines of LANG_WORDS words or more with no final segment of their side at the same time: speech the
+    final pass did not hear (its voice detection is not the live one), kept as the live pass heard it."""
+    out = []
+    for e in lines:
+        if len(e["text"].split()) < LANG_WORDS:
+            continue
+        a, b = e["t_start"] - started, e["speech_end"] - started
+        if not any(ch == e["channel"] and s < b and t > a for s, t, ch, _, _ in segments):
+            out.append((a, b, e["channel"], e["lang"], " ".join(e["text"].split())))
+    return out
+
+
+def _mine(a: float, b: float, text: str, theirs: list[tuple[float, float, str]],
+          heard: list[tuple[float, float]]) -> bool:
+    """Whether a final line of mine is mine and not the other side's echo: not their words of the same moment, and,
+    while they talk, heard live too."""
+    if repeats(text, [t for s, e, t in theirs if s < b + ECHO_WINDOW_S and e > a - ECHO_WINDOW_S]):
+        return False
+    over_them = any(s < b and e > a for s, e, _ in theirs)
+    return not over_them or any(s < b + LIVE_NEAR_S and e > a - LIVE_NEAR_S for s, e in heard)
 
 
 def _replace(path: Path, text: str) -> None:

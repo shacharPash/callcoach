@@ -4,6 +4,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -124,23 +125,40 @@ class WhisperClient:
         return str(self._post(fields, pcm).get("text", "")).strip()
 
     def segments(self, pcm: bytes, lang: str, prompt: str = "") -> list[tuple[float, float, str]]:
-        """(start, end, text) of each sentence Whisper found in the audio, in seconds from its start."""
-        fields = {"language": lang, "response_format": "verbose_json", "temperature": "0.0", "no_timestamps": "false"}
+        """(start, end, text) of each sentence Whisper found in the audio, in seconds from its start. Asked as SRT:
+        verbose_json names the language it detected, and audio with no speech in it has none, which crashes the
+        server."""
+        fields = {"language": lang, "response_format": "srt", "temperature": "0.0", "no_timestamps": "false"}
         if prompt:
             fields["prompt"] = prompt
-        return [(float(s["start"]), float(s["end"]), str(s.get("text", "")).strip())
-                for s in self._post(fields, pcm).get("segments", []) if str(s.get("text", "")).strip()]
+        out = []
+        for m in _SRT_CUE.finditer(self._post_raw(fields, pcm).replace("\r\n", "\n")):
+            text = " ".join(m.group(3).split())
+            if text:
+                out.append((_srt_seconds(m.group(1)), _srt_seconds(m.group(2)), text))
+        return out
 
     def detect(self, pcm: bytes) -> dict[str, float]:
         resp = self._post({"response_format": "verbose_json", "detect_language": "true"}, pcm)
         return {k: float(v) for k, v in resp.get("language_probabilities", {}).items()}
 
     def _post(self, fields: dict[str, str], pcm: bytes) -> dict:
+        return json.loads(self._post_raw(fields, pcm))
+
+    def _post_raw(self, fields: dict[str, str], pcm: bytes) -> str:
         body, content_type = multipart(fields, pcm_to_wav(pcm))
         req = urllib.request.Request(self.base_url + "/inference", data=body, method="POST",
                                      headers={"Content-Type": content_type})
         with _OPENER.open(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            return resp.read().decode("utf-8", errors="replace")
+
+
+_SRT_CUE = re.compile(r"^(\d+:\d\d:\d\d[,.]\d+) --> (\d+:\d\d:\d\d[,.]\d+)\n(.*?)(?=\n\n|\n*\Z)", re.M | re.S)
+
+
+def _srt_seconds(stamp: str) -> float:
+    h, m, s = stamp.replace(",", ".").split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
 
 
 class WhisperServer:
