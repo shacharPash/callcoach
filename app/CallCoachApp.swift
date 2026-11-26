@@ -139,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     var previousApp: NSRunningApplication?
     var lastPhase = Phase.starting
     var lastIcon = CallIcon.none
+    var lastSilent: [String] = []
     var subscriptions = Set<AnyCancellable>()
 
     init(stream: URL?, speed: Double) {
@@ -355,6 +356,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             lastIcon = kind
             statusItem?.button?.image = Self.icon(kind)
         }
+        let silent = SilentSide.sides(model)
+        if silent != lastSilent {
+            let shown = Self.panelShown(phase: model.phase, visible: model.visible, idle: state.idlePanel)
+            let alerts = SilentSide.alerts(was: lastSilent, now: silent, panelShown: shown, inCall: model.phase == .active)
+            lastSilent = silent
+            alerts.post.forEach(silentWarning)
+            let gone = alerts.remove.map(SilentSide.identifier)
+            if !gone.isEmpty { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: gone) }
+        }
         if model.phase != lastPhase {
             lastPhase = model.phase
             if model.phase != .active { contextWindow?.close() }
@@ -426,11 +436,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
     }
 
+    /// A side of the call is not being recorded and the panel is not on screen; a click shows the panel.
+    func silentWarning(_ side: String) {
+        let content = UNMutableNotificationContent()
+        content.title = SilentSide.title(side)
+        content.body = SilentSide.detail(side)
+        content.userInfo = ["panel": true]
+        let request = UNNotificationRequest(identifier: SilentSide.identifier(side), content: content, trigger: nil)
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert]) { granted, _ in
+            if granted { center.add(request) }
+        }
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler done: @escaping () -> Void) {
-        let call = response.notification.request.content.userInfo["call"] as? String
+        let info = response.notification.request.content.userInfo
+        let call = info["call"] as? String
         DispatchQueue.main.async {
-            self.openCall(call)
+            if info["panel"] as? Bool == true { self.state.setVisible(true) } else { self.openCall(call) }
             done()
         }
     }
@@ -445,9 +469,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     static let menuBarPosition = 400
 
     /// The icon follows the mode: none with no call, a recording symbol while the call only records, the filled
-    /// bubble while the coach is on.
+    /// bubble while the coach is on, and a triangle while a side of the call is not being recorded.
     static func callIcon(_ model: CallModel) -> CallIcon {
         guard model.phase == .active || model.phase == .stopping else { return .none }
+        if !SilentSide.sides(model).isEmpty { return .warning }
         return model.chips.coach ? .coach : .recording
     }
 
@@ -457,6 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         case .none: name = "text.bubble"
         case .recording: name = MenuSymbol.record
         case .coach: name = "text.bubble.fill"
+        case .warning: name = "exclamationmark.triangle.fill"
         }
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "CallCoach")
         image?.isTemplate = true
@@ -596,7 +622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 }
 
-enum CallIcon: CaseIterable { case none, recording, coach }
+enum CallIcon: CaseIterable { case none, recording, coach, warning }
 
 /// An item of the menu in a call.
 enum CallMenuItem {

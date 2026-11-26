@@ -81,6 +81,7 @@ struct PanelView: View {
                 if let limit = LimitBanner.text(m.status?.limit, coach: m.chips.coach) {
                     LimitBanner(text: limit, coach: m.chips.coach && m.phase == .active, turnOff: { state.toggleCoach() })
                 }
+                if let silent = SilentSide.notice(m) { NoticeView(notice: silent, tint: .orange).frame(maxWidth: strip ? 280 * s : nil) }
                 if let banner = m.banner { NoticeView(notice: banner, tint: .red).frame(maxWidth: strip ? 280 * s : nil) }
                 if let note = m.note { NoticeView(notice: note, tint: .secondary).frame(maxWidth: strip ? 280 * s : nil) }
                 if !m.folded { sections(m, s) }

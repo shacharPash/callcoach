@@ -33,6 +33,9 @@ struct Status: Codable, Equatable {
     var cpu: Double? = nil
     /// The subscription's limit as Claude last told it: "ok", "near" or "reached".
     var limit: String? = nil
+    /// The sides not being recorded now ("me", "them"), as the engine finds them (silence.py). An older engine sends
+    /// none.
+    var silent: [String] = []
 }
 
 extension Status {
@@ -48,7 +51,8 @@ extension Status {
                   transcribing: try c.decodeIfPresent(Bool.self, forKey: .transcribing) ?? true,
                   tokens: try c.decodeIfPresent(Int.self, forKey: .tokens),
                   features: try c.decodeIfPresent([String: Int].self, forKey: .features),
-                  cpu: try c.decodeIfPresent(Double.self, forKey: .cpu), limit: try c.decodeIfPresent(String.self, forKey: .limit))
+                  cpu: try c.decodeIfPresent(Double.self, forKey: .cpu), limit: try c.decodeIfPresent(String.self, forKey: .limit),
+                  silent: try c.decodeIfPresent([String].self, forKey: .silent) ?? [])
     }
 }
 

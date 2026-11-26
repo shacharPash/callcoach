@@ -20,6 +20,7 @@ from callcoach.language import ConversationLanguage, LanguageRouter
 from callcoach.protocol import Emitter
 from callcoach.recorder import FinalizeResult, Recorder
 from callcoach.segmenter import Segmenter
+from callcoach.silence import SilentSides
 from callcoach.store import TranscriptStore
 from callcoach.textfilter import EchoFilter, clean
 from callcoach.transcriber import Transcriber, TranscriptionDown
@@ -84,6 +85,8 @@ class CallEngine:
         self.chunks: queue.Queue[Chunk] = queue.Queue()
         self.pool = ThreadPoolExecutor(max_workers=workers)
         self.voiced = {ME: 0.0, THEM: 0.0}
+        self.silence = SilentSides()
+        self._silent: list[str] = []
         self.last_voice = self.started
         self.last_t = {ch: self.started for ch in CHANNELS}
         self._line_ids = itertools.count(1)
@@ -220,6 +223,7 @@ class CallEngine:
 
     def _handle_chunk(self, chunk: Chunk) -> None:
         heard = not self._is_paused() and (chunk.channel == THEM or self._hear_me())
+        self.silence.feed(chunk, heard)
         if not heard:
             chunk = dataclasses.replace(chunk, pcm=bytes(len(chunk.pcm)))
         if self.recording:
@@ -404,6 +408,14 @@ class CallEngine:
                 self._store_failed = True
                 self.emitter.error("transcript_stopped", f"transcript file stopped ({e}); lines are still shown")
 
+    def _silent_sides(self) -> list[str]:
+        """The sides not being recorded (silence.py); each change is a note in the log."""
+        silent = self.silence.sides(self.voiced[ME])
+        if silent != self._silent:
+            self._silent = silent
+            self.emitter.note("silent", sides=silent)
+        return silent
+
     def _status(self, state: str) -> None:
         total = self.voiced[ME] + self.voiced[THEM]
         extra = {**STATUS_DEFAULTS, **(self.status_extra() if self.status_extra else {})}
@@ -411,7 +423,7 @@ class CallEngine:
                           talk_share=round(self.voiced[ME] / total, 2) if total else 0.0,
                           lang_me=self.routers[ME].current, lang_them=self.routers[THEM].current,
                           conversation_lang=self.conversation.current, hearing=self.hearing,
-                          me_voice=self._me_voice(), paused=self.paused,
+                          me_voice=self._me_voice(), paused=self.paused, silent=self._silent_sides(),
                           transcribing=bool(getattr(self.transcriber, "ready", True)), **extra)
 
     def _shutdown(self) -> FinalizeResult:

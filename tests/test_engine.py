@@ -848,3 +848,19 @@ def test_my_voice_shows_only_while_callcoach_hears_it(tmp_path):
     now[0] = 100.2
     engine.set_hearing(False)
     assert engine._me_voice() is False
+
+
+def test_the_status_names_a_side_that_is_not_being_recorded(tmp_path):
+    me = (tone(1.0, 4000) + quiet(1.0)) * 50
+    engine, out = make_engine(tmp_path, me, quiet(100.0), FakeTranscriber(), auto_stop_seconds=1e9)
+    engine.run()
+    events = events_of(out)
+    statuses = [e for e in events if e["type"] == "status"]
+    assert statuses[0]["silent"] == [] and statuses[-1]["silent"] == ["them"]
+    assert engine.voiced[ME] >= 15
+
+
+def test_a_call_with_both_sides_heard_has_no_side_missing(tmp_path):
+    engine, out = make_engine(tmp_path, ME_AUDIO, THEM_AUDIO, FakeTranscriber())
+    engine.run()
+    assert all(e["silent"] == [] for e in events_of(out) if e["type"] == "status")

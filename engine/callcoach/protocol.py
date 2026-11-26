@@ -14,7 +14,7 @@ EVENTS: dict[str, tuple[str, ...]] = {
     "hello": ("protocol", "version"),
     "ready": ("folder", "replay_t0"),
     "status": ("state", "elapsed", "talk_share", "lang_me", "lang_them", "conversation_lang",
-               "agent", "level", "visible", "hearing", "me_voice", "paused", "transcribing"),
+               "agent", "level", "visible", "hearing", "me_voice", "paused", "transcribing", "silent"),
     "segment": ("id", "channel", "t_start", "speech_end", "closed_at", "duration"),
     "line": ("id", "segment_id", "channel", "lang", "text", "t_start", "speech_end", "line_ready",
              "conversation_lang"),

@@ -387,7 +387,7 @@ class Session:
         self.emitter.emit("status", state=state, elapsed=0.0, talk_share=0.0, lang_me=self.lang,
                           lang_them=self.lang, conversation_lang=self.lang, agent=self.agent_state,
                           level=self.level, visible=True, hearing=True, me_voice=False, paused=False,
-                          transcribing=self.transcriber.ready)
+                          transcribing=self.transcriber.ready, silent=[])
 
     def _warm(self) -> None:
         """Starts the whisper servers and hands them to the stand-in, the servers or a down transcriber, whatever
