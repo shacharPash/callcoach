@@ -30,6 +30,10 @@ enum Main {
         if args.contains("--self-check") {
             exit(SelfCheck.run(root: Paths.root) ? 0 : 1)
         }
+        if args.contains("--check-update") {
+            print(Updater.describe(Updater.check(root: Paths.root)))
+            exit(0)
+        }
         let app = NSApplication.shared
         app.mainMenu = mainMenu()
         let delegate = AppDelegate(stream: value(after: "--stream", in: args).map { URL(fileURLWithPath: $0) },
@@ -140,6 +144,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     var lastPhase = Phase.starting
     var lastIcon = CallIcon.none
     var lastSilent: [String] = []
+    var update: Updater.Found?
+    var updateNotePending = false
+    var updateTimer: Timer?
     var subscriptions = Set<AnyCancellable>()
 
     init(stream: URL?, speed: Double) {
@@ -176,6 +183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             Hotkeys.shared.register(keyCode: action.keyCode, id: UInt32(i + 1)) { [weak self] in self?.perform(id) }
         }
         state.recover()
+        showUpdateResult()
+        if stream == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in self?.checkForUpdate() }
+            updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 3600, repeats: true) { [weak self] _ in self?.checkForUpdate() }
+        }
         if let file = ProcessInfo.processInfo.environment["CALLCOACH_AUTOSTART"] {
             autostart(URL(fileURLWithPath: file))
         } else if atLogin {
@@ -292,6 +304,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     @objc func startCallNow() { startNow() }
 
+    @objc func toggleUpdateChecksFromMenu() {
+        let on = !Updater.checksOn(state.defaults)
+        Updater.setChecks(on, state.defaults)
+        if on { checkForUpdate() } else { update = nil; updateNotePending = false }
+    }
+
+    @objc func updateFromMenu() { confirmUpdate() }
+
+    /// Off the main thread: git talks to GitHub. The menu and the notification follow what it found.
+    func checkForUpdate() {
+        let defaults = state.defaults
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let outcome = Updater.check(root: Paths.root, defaults: defaults)
+            DispatchQueue.main.async { [weak self] in self?.updateFound(outcome) }
+        }
+    }
+
+    func updateFound(_ outcome: Updater.Outcome) {
+        switch outcome {
+        case .ahead(let found):
+            update = found
+            switch Updater.notice(found, notified: state.defaults.string(forKey: Updater.notifiedKey), inCall: state.inCall) {
+            case .post: postUpdateNote(found)
+            case .later: updateNotePending = true
+            case .none: break
+            }
+        case .upToDate, .off, .notAClone:
+            update = nil
+            updateNotePending = false
+        case .diverged, .failed:
+            AppLog.write("update check: \(Updater.describe(outcome))")
+        }
+    }
+
+    func postUpdateNote(_ found: Updater.Found) {
+        updateNotePending = false
+        state.defaults.set(found.remote, forKey: Updater.notifiedKey)
+        let note = Updater.foundNote
+        post(identifier: "update", title: note.title, body: note.body, info: ["update": true])
+    }
+
+    /// Asks first; changes of your own in the folder stop it before the app quits.
+    func confirmUpdate() {
+        guard let update else { return }
+        if state.inCall { return alert(Updater.inCallText) }
+        if Updater.localChanges(Paths.root) { return alert(Updater.changesText(Paths.root)) }
+        let text = Updater.confirmText(update)
+        NSApp.activate()
+        let ask = NSAlert()
+        ask.messageText = text.title
+        ask.informativeText = text.body
+        ask.addButton(withTitle: text.update)
+        ask.addButton(withTitle: text.cancel)
+        ask.window.sharingType = WindowHost.sharing
+        guard ask.runModal() == .alertFirstButtonReturn, !state.inCall else { return }
+        if let error = Updater.start(root: Paths.root) { return alert(Updater.startFailedText(error)) }
+        AppLog.write("update: started, quitting")
+        NSApp.terminate(nil)
+    }
+
+    /// After the script opened the app again: one notification that says how it went.
+    func showUpdateResult() {
+        guard let result = Updater.take(Updater.resultFile) else { return }
+        AppLog.write("update: \(result.step) \(result.from.prefix(7))..\(result.to.prefix(7))")
+        let count = result.ok && result.from != result.to
+            ? Updater.git(Paths.root, ["rev-list", "--count", "\(result.from)..\(result.to)"]).flatMap { Int($0.out) } : nil
+        let note = Updater.resultNote(result, count: count)
+        post(identifier: "update result", title: note.title, body: note.body, info: [:])
+    }
+
+    func post(identifier: String, title: String, body: String, info: [String: Any]) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = info
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert]) { granted, _ in
+            if granted { center.add(request) }
+        }
+    }
+
     /// What the start button does: the due brief when there is one.
     func startNow() {
         state.reloadBriefs()
@@ -368,6 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         if model.phase != lastPhase {
             lastPhase = model.phase
             if model.phase != .active { contextWindow?.close() }
+            if updateNotePending, !state.inCall, let update { postUpdateNote(update) }
         }
         if model.phase == .active && state.idlePanel { state.idlePanel = false }
         if Self.panelShown(phase: model.phase, visible: model.visible, idle: state.idlePanel) {
@@ -454,7 +549,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let info = response.notification.request.content.userInfo
         let call = info["call"] as? String
         DispatchQueue.main.async {
-            if info["panel"] as? Bool == true { self.state.setVisible(true) } else { self.openCall(call) }
+            if info["update"] as? Bool == true { self.confirmUpdate() }
+            else if info["panel"] as? Bool == true { self.state.setVisible(true) } else { self.openCall(call) }
             done()
         }
     }
@@ -514,6 +610,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         let model = state.model
         menu.addItem(info(Self.statusLine(model, starting: state.starting)))
         menu.addItem(.separator())
+        if update != nil {
+            menu.addItem(item(Updater.menuTitle, state.inCall ? nil : #selector(updateFromMenu), MenuSymbol.update))
+            menu.addItem(.separator())
+        }
         if state.inCall {
             let active = model.phase == .active
             for entry in Self.callMenu(model) {
@@ -560,6 +660,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         menu.addItem(check(Self.autoRecordTitle, on: Settings.autoRecord(state.defaults), #selector(toggleAutoRecordFromMenu),
                            MenuSymbol.autoRecord))
         menu.addItem(check(Self.openAtLoginTitle, on: LoginItem.on, #selector(toggleOpenAtLoginFromMenu), MenuSymbol.openAtLogin))
+        menu.addItem(check(Updater.checkTitle, on: Updater.checksOn(state.defaults), #selector(toggleUpdateChecksFromMenu),
+                           MenuSymbol.checkUpdates))
         menu.addItem(item(L("הגדרות…", "Settings…"), #selector(openSettings), MenuSymbol.settings))
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: L("יציאה מ-CallCoach", "Quit CallCoach"), action: #selector(NSApplication.terminate(_:)),
@@ -673,9 +775,11 @@ enum MenuSymbol {
     static let coach = "sparkles"
     static let autoRecord = "phone.arrow.down.left"
     static let openAtLogin = "person.crop.circle.badge.checkmark"
+    static let update = "arrow.down.circle"
+    static let checkUpdates = "arrow.triangle.2.circlepath"
 
     static let all = [start, record, prepare, open, settings, quit, ask, termsNow, screen, context, pause, resume, copy,
-                      mark, hide, show, bringHere, stop, stopSummary, coach, autoRecord, openAtLogin]
+                      mark, hide, show, bringHere, stop, stopSummary, coach, autoRecord, openAtLogin, update, checkUpdates]
 }
 
 extension SelfCheck {

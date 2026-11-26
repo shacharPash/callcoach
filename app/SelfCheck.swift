@@ -31,6 +31,7 @@ enum SelfCheck {
         ("call watch", watchChecks),
         ("auto record", autoChecks),
         ("silent side", SilentSide.checks),
+        ("updates", Updater.checks),
     ]
 
     static func run(root: URL) -> Bool {
