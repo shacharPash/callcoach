@@ -147,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        let atLogin = Self.launchedAsLoginItem(NSAppleEventManager.shared().currentAppleEvent)
         state = AppState(stream: stream, speed: speed)
         state.onFatal = { [weak self] in self?.alert($0) }
         state.onSummary = { [weak self] in self?.summaryReady($0) }
@@ -176,10 +177,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         state.recover()
         if let file = ProcessInfo.processInfo.environment["CALLCOACH_AUTOSTART"] {
             autostart(URL(fileURLWithPath: file))
+        } else if atLogin {
+            AppLog.write("opened as a login item: only the menu bar icon")
         } else {
             openMain()
         }
         updateDock()
+    }
+
+    /// Opened by macOS as a login item ("פתח בכניסה למחשב"): the open event says so in its property data. Any other
+    /// open, or an event that cannot be read, shows the main window as before.
+    static func launchedAsLoginItem(_ event: NSAppleEventDescriptor?) -> Bool {
+        guard let event, event.eventID == AEEventID(kAEOpenApplication) else { return false }
+        return event.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem)
     }
 
     /// Opening the app again, or a click on its Dock icon, shows the main window, and the panel too during a call.
@@ -270,6 +280,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     @objc func pauseFromMenu() { state.togglePause() }
 
     @objc func copyTranscriptFromMenu() { state.copyTranscript() }
+
+    @objc func toggleAutoRecordFromMenu() { state.toggleAutoRecord() }
+
+    @objc func toggleOpenAtLoginFromMenu() {
+        guard let error = LoginItem.set(!LoginItem.on) else { return }
+        AppLog.write("open at login: \(error)")
+        alert(L("לא הצלחתי לשנות את הפתיחה בכניסה למחשב: \(error)", "Could not change opening at login: \(error)"))
+    }
 
     @objc func startCallNow() { startNow() }
 
@@ -513,6 +531,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         }
         menu.addItem(item(Self.withHotkey(Actions.open.label, Actions.open), #selector(openMain), MenuSymbol.open))
         menu.addItem(.separator())
+        menu.addItem(check(Self.autoRecordTitle, on: Settings.autoRecord(state.defaults), #selector(toggleAutoRecordFromMenu),
+                           MenuSymbol.autoRecord))
+        menu.addItem(check(Self.openAtLoginTitle, on: LoginItem.on, #selector(toggleOpenAtLoginFromMenu), MenuSymbol.openAtLogin))
         menu.addItem(item(L("הגדרות…", "Settings…"), #selector(openSettings), MenuSymbol.settings))
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: L("יציאה מ-CallCoach", "Quit CallCoach"), action: #selector(NSApplication.terminate(_:)),
@@ -552,8 +573,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     static var bringHereTitle: String { L("הבא את הפאנל לכאן", "Bring the panel here") }
 
+    /// The two switches of the menu, in and out of a call, as in CallRec's menu.
+    static var autoRecordTitle: String { L("הקלט שיחות אוטומטית", "Record calls automatically") }
+    static var openAtLoginTitle: String { L("פתח בכניסה למחשב", "Open at login") }
+
     private func info(_ title: String) -> NSMenuItem {
         NSMenuItem(title: title, action: nil, keyEquivalent: "")
+    }
+
+    /// An item with a check mark when its switch is on.
+    private func check(_ title: String, on: Bool, _ action: Selector, _ symbol: String) -> NSMenuItem {
+        let switchItem = item(title, action, symbol)
+        switchItem.state = on ? .on : .off
+        return switchItem
     }
 
     private func item(_ title: String, _ action: Selector?, _ symbol: String? = nil) -> NSMenuItem {
@@ -613,9 +645,11 @@ enum MenuSymbol {
     static let stop = "stop.circle"
     static let stopSummary = "text.badge.checkmark"
     static let coach = "sparkles"
+    static let autoRecord = "phone.arrow.down.left"
+    static let openAtLogin = "person.crop.circle.badge.checkmark"
 
     static let all = [start, record, prepare, open, settings, quit, ask, termsNow, screen, context, pause, resume, copy,
-                      mark, hide, show, bringHere, stop, stopSummary, coach]
+                      mark, hide, show, bringHere, stop, stopSummary, coach, autoRecord, openAtLogin]
 }
 
 extension SelfCheck {
@@ -662,6 +696,23 @@ extension SelfCheck {
         store.lang = .he
         expect(AppDelegate.statusLine(CallModel()) == "מוכן לשיחה", "Hebrew status line", &p)
         expect(AppDelegate.bringHereTitle == "הבא את הפאנל לכאן", "bring the panel here", &p)
+        expect(AppDelegate.autoRecordTitle == "הקלט שיחות אוטומטית" && AppDelegate.openAtLoginTitle == "פתח בכניסה למחשב",
+               "the two switches in Hebrew", &p)
+        store.lang = .en
+        expect(AppDelegate.autoRecordTitle == "Record calls automatically" && AppDelegate.openAtLoginTitle == "Open at login",
+               "the two switches in English", &p)
+        store.lang = .he
+        func openEvent(atLogin: Bool) -> NSAppleEventDescriptor {
+            let event = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEOpenApplication),
+                                               targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                                               transactionID: AETransactionID(kAnyTransactionID))
+            if atLogin {
+                event.setParam(NSAppleEventDescriptor(enumCode: OSType(keyAELaunchedAsLogInItem)), forKeyword: AEKeyword(keyAEPropData))
+            }
+            return event
+        }
+        expect(AppDelegate.launchedAsLoginItem(openEvent(atLogin: true)) && !AppDelegate.launchedAsLoginItem(openEvent(atLogin: false))
+               && !AppDelegate.launchedAsLoginItem(nil), "only an open as a login item keeps the main window closed", &p)
         var paused = CallModel()
         paused.phase = .active
         paused.chips = Chips(on: [.transcript])
