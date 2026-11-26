@@ -80,8 +80,9 @@ def test_lines_of_one_speaker_that_follow_each_other_are_one_line():
                    (7.5, 9.0, "them", "en", "sure"), (30.0, 31.0, "them", "en", "bye")]
 
 
-@pytest.mark.parametrize("states, free", [(("on",), True), (("on", "stopped"), False), (("off",), False),
-                                          (("unavailable",), False), ((), False)])
+@pytest.mark.parametrize("states, free", [(("on",), True), (("on", "headphones", "on"), True),
+                                          (("on", "stopped"), False), (("on", "headphones", "stopped"), False),
+                                          (("off",), False), (("unavailable",), False), ((), False)])
 def test_only_a_call_whose_echo_canceller_ran_to_the_end_is_free_of_echo(tmp_path, states, free):
     assert echo_free(make_call(tmp_path, [], aec=states)) is free
 

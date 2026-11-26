@@ -6,8 +6,10 @@ The other side's chunks pass straight on. Each 10 ms of the mic is processed onc
 time has gone in first (the echo always comes after the sound that made it), or after max_wait_s without it, and
 leaves as the same chunks, with the same lengths and times. Both sides are placed in time by counting their samples,
 like the recorder's tracks, not by when each chunk arrived: a chunk held back by a busy thread would otherwise put
-the far end out of line with the mic, and the canceller would lose the echo. Apple's echo cancellation is not used:
-while it runs on speakers, every other app gets the mic almost silent."""
+the far end out of line with the mic, and the canceller would lose the echo. On headphones the mic holds no echo, and
+the canceller would only make my voice quieter where I talk over the other side while it learns, so there the mic
+goes on as it came. Apple's echo cancellation is not used: while it runs on speakers, every other app gets the mic
+almost silent."""
 from __future__ import annotations
 
 import os
@@ -21,6 +23,26 @@ from callcoach.data import ME, THEM, Chunk
 AEC_ENV = "CALLCOACH_AEC"
 FRAME = RATE // 100
 FRAME_BYTES = FRAME * SAMPLE_BYTES
+
+
+def headphones_now() -> bool | None:
+    """Whether the sound goes to headphones now, by callcoach-mic's rule: Bluetooth (far more often headphones than a
+    speaker) and the built-in headphone jack count; USB, HDMI, AirPlay and anything unknown may be speakers. None
+    when Core Audio cannot tell."""
+    try:
+        from catap.bindings._coreaudio import (get_property_bytes, kAudioObjectPropertyScopeOutput,
+                                               kAudioObjectSystemObject)
+
+        def number(obj: int, key: bytes, **scope) -> int:
+            return int.from_bytes(get_property_bytes(obj, int.from_bytes(key, "big"), **scope)[:4], "little")
+
+        device = number(kAudioObjectSystemObject, b"dOut")
+        transport = number(device, b"tran").to_bytes(4, "big")
+        if transport == b"bltn":
+            return number(device, b"ssrc", scope=kAudioObjectPropertyScopeOutput).to_bytes(4, "big") == b"hdpn"
+        return transport in (b"blue", b"blea")
+    except Exception:
+        return None
 
 
 class LivekitApm:
@@ -87,16 +109,25 @@ class StreamClock:
 
 class EchoCanceller:
     """One call's echo canceller between the sources and the engine. put() takes both channels, from both source
-    threads; the engine's sink gets them in order per channel. A canceller that fails sends the mic on as it is."""
+    threads; the engine's sink gets them in order per channel. A canceller that fails sends the mic on as it is.
+    headphones() is asked once for every check_s of the mic; while it says yes, the mic still goes through the
+    canceller, so it keeps up with the call, but leaves as it came."""
 
     def __init__(self, apm, *, max_wait_s: float = 0.3, keep_s: float = 0.5, buffer_s: float = 5.0,
                  gap_tolerance_s: float = 0.25, window_s: float = 10.0,
-                 on_error: Callable[[str], None] = lambda m: None):
+                 on_error: Callable[[str], None] = lambda m: None,
+                 headphones: Callable[[], bool | None] = lambda: False, check_s: float = 1.0,
+                 on_headphones: Callable[[bool], None] = lambda on: None):
         self.apm = apm
         self.max_wait = round(max_wait_s * RATE)
         self.keep = round(keep_s * RATE)
         self.buffer_bytes = round(buffer_s * RATE) // FRAME * FRAME_BYTES
         self.on_error = on_error
+        self.headphones = headphones
+        self.check_every = round(check_s * RATE)
+        self.on_headphones = on_headphones
+        self._next_check = 0
+        self._as_it_came = False
         self._lock = threading.Lock()
         self._sink: Callable[[Chunk], None] | None = None
         self._them = StreamClock(window_s, gap_tolerance_s)
@@ -124,6 +155,9 @@ class EchoCanceller:
                 if self._me.gap(samples, chunk.t_end):
                     self._drain(force=True)
                 self._me.add(samples, chunk.t_end)
+                if self._me.count >= self._next_check:
+                    self._next_check = self._me.count + self.check_every
+                    self._check_output()
                 self._mic += chunk.pcm
                 self._pending.append((len(chunk.pcm), chunk.t_end))
             self._drain(force=False)
@@ -141,6 +175,15 @@ class EchoCanceller:
                 self._out += self._capture_frame(end)[:rest]
                 self._mic.clear()
             self._emit()
+
+    def _check_output(self) -> None:
+        try:
+            on = self.headphones() is True
+        except Exception:
+            on = False
+        if on != self._as_it_came:
+            self._as_it_came = on
+            self.on_headphones(on)
 
     def _frame_end(self) -> int:
         """The mic's count at the end of the first frame waiting."""
@@ -170,7 +213,8 @@ class EchoCanceller:
             return frame
         try:
             self._feed_render(end)
-            return self.apm.capture(frame)
+            clean = self.apm.capture(frame)
+            return frame if self._as_it_came else clean
         except Exception as e:
             self._failed = True
             self.on_error(f"echo cancellation stopped ({type(e).__name__}: {e}); the mic goes on as it is")
@@ -230,9 +274,10 @@ def aec_wanted(environ=os.environ) -> bool:
 
 
 def cancel_echo(sources: list, on_note: Callable[..., None], *, environ=os.environ,
-                make_apm: Callable[[], object] = LivekitApm) -> list:
+                make_apm: Callable[[], object] = LivekitApm,
+                headphones: Callable[[], bool | None] = headphones_now) -> list:
     """The live sources with the echo canceller between them and the engine; the sources as they are when it is
-    turned off or cannot load."""
+    turned off or cannot load. events.log notes each change between headphones and speakers."""
     if not aec_wanted(environ):
         on_note("aec", state="off")
         return sources
@@ -241,6 +286,8 @@ def cancel_echo(sources: list, on_note: Callable[..., None], *, environ=os.envir
     except Exception as e:
         on_note("aec", state="unavailable", error=f"{type(e).__name__}: {e}")
         return sources
-    canceller = EchoCanceller(apm, on_error=lambda message: on_note("aec", state="stopped", error=message))
+    canceller = EchoCanceller(apm, on_error=lambda message: on_note("aec", state="stopped", error=message),
+                              headphones=headphones,
+                              on_headphones=lambda on: on_note("aec", state="headphones" if on else "on"))
     on_note("aec", state="on")
     return [Cancelled(s, canceller) for s in sources]

@@ -78,6 +78,51 @@ def test_each_mic_frame_goes_in_after_the_far_end_of_the_same_moment():
     assert [ch.channel for ch in out].count(ME) == 50
 
 
+class QuietingApm(FakeApm):
+    """Every mic frame comes out as silence, so a frame that came out as it went in did not take the canceller's."""
+
+    def capture(self, frame: bytes) -> bytes:
+        super().capture(frame)
+        return bytes(len(frame))
+
+
+def mic_values(out: list[Chunk]) -> list[int]:
+    pcm = b"".join(ch.pcm for ch in out if ch.channel == ME)
+    return [first(pcm[i:i + 2 * FRAME]) for i in range(0, len(pcm), 2 * FRAME)]
+
+
+def test_on_headphones_the_mic_still_goes_through_the_canceller_but_leaves_as_it_came():
+    apm = QuietingApm()
+    c, out = canceller(apm, headphones=lambda: True)
+    for k in range(5):
+        c.put(numbered(THEM, k))
+        c.put(numbered(ME, k))
+    assert mic_values(out) == list(range(1, 11))
+    assert [n for kind, n in apm.calls if kind == "capture"] == list(range(1, 11))
+
+
+def test_a_change_between_speakers_and_headphones_in_the_call_takes_effect_within_check_s():
+    apm, on, changes = QuietingApm(), [False], []
+    c, out = canceller(apm, headphones=lambda: on[0], check_s=STEP, on_headphones=changes.append)
+    for k in range(9):
+        on[0] = 3 <= k < 6
+        c.put(numbered(THEM, k))
+        c.put(numbered(ME, k))
+    assert mic_values(out) == [0] * 6 + list(range(7, 13)) + [0] * 6
+    assert changes == [True, False]
+
+
+def test_headphones_that_cannot_be_told_count_as_speakers():
+    def broken():
+        raise OSError("no Core Audio")
+
+    for answer in (broken, lambda: None):
+        c, out = canceller(QuietingApm(), headphones=answer)
+        c.put(numbered(THEM, 0))
+        c.put(numbered(ME, 0))
+        assert mic_values(out) == [0, 0]
+
+
 def late_in_bursts(chunks: list[Chunk], seed: int) -> list[Chunk]:
     """The same chunks, held back and then delivered together, the way a busy thread delivers them: every chunk of
     a burst is stamped when the last one comes, and the last one is on time."""
@@ -302,6 +347,19 @@ def test_cancel_echo_puts_one_canceller_between_the_sources_and_the_engine():
     wrapped = cancel_echo([mic, system], note, environ={}, make_apm=FakeApm)
     assert [w.source for w in wrapped] == [mic, system] and wrapped[0].canceller is wrapped[1].canceller
     assert seen == [{"kind": "aec", "state": "on"}]
+
+
+def test_cancel_echo_notes_headphones_and_speakers():
+    seen, note = notes()
+    on = [True]
+    wrapped = cancel_echo([Source(), Source()], note, environ={}, make_apm=FakeApm, headphones=lambda: on[0])
+    c = wrapped[0].canceller
+    c.check_every = STEP_SAMPLES
+    c.attach(lambda chunk: None)
+    for k, state in enumerate((True, True, False)):
+        on[0] = state
+        c.put(numbered(ME, k))
+    assert [n["state"] for n in seen] == ["on", "headphones", "on"]
 
 
 def db(x: np.ndarray) -> float:

@@ -8,7 +8,7 @@ Transcription runs on your Mac with whisper.cpp. Only the text goes to the agent
 
 When the call ends, each side of the recording is transcribed once more in full, in the background, with the call's names and terms. Whisper then hears every sentence with the ones around it rather than in the live pieces of a few seconds, and this final transcript replaces the live one. A new call can start at once: the final pass waits while it records.
 
-Headphones are not needed: the echo of the other side that the mic picks up from the speakers is removed on the Mac too, with WebRTC's echo canceller, before anything is recorded or transcribed.
+Headphones are not needed: the echo of the other side that the mic picks up from the speakers is removed on the Mac too, with WebRTC's echo canceller, before anything is recorded or transcribed. On headphones (Bluetooth or the headphone jack) there is no echo, so the mic goes on exactly as it came, even when you talk over the other side.
 
 This is a personal project, shared as is. It works for me every day, but expect rough edges.
 

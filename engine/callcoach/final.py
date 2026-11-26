@@ -41,7 +41,8 @@ class FinalResult:
 
 def echo_free(folder: Path) -> bool:
     """Whether the mic of this call was free of the other side: CallCoach's echo canceller ran to the end of it
-    (events.log notes when it starts and when it stops)."""
+    (events.log notes when it starts and when it stops). Stretches on headphones, where it lets the mic through as it
+    came, had no echo to remove."""
     try:
         text = (folder / "events.log").read_text(encoding="utf-8", errors="replace")
     except OSError:
