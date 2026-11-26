@@ -289,8 +289,11 @@ extension SelfCheck {
         seconds(3, [])
         expect(stops(channels[0]).count == 1, "the stop is sent once", &p)
         channels[0].emit(stopped)
+        state.idlePanel = true
         seconds(4, zoom)
-        expect(channels.count == 2 && starts(channels[1]).first?.title == "Zoom", "the next call starts as the first did", &p)
+        expect(channels.count == 2 && starts(channels[1]).first?.title == "Zoom" && state.model.visible,
+               "the next call starts as the first did, and a panel open already stays", &p)
+        state.idlePanel = false
 
         ready(channels[1])
         state.stop()

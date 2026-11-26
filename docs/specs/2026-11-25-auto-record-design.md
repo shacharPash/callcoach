@@ -45,7 +45,8 @@ today (live Whisper during the call, the final pass after it).
   too, as in a call.
 - The panel does not show for such a call: the call is seen in the menu bar icon (the recording symbol) and in the
   main window's call card when the window is open. No notification at the start, as in CallRec. Showing the panel is
-  the same as in any call (the menu, the hotkey, the main window).
+  the same as in any call (the menu, the hotkey, the main window). A panel he opened before the call ("פאנל השיחה")
+  stays open: it did not open by itself.
 - The call's title is what the home's field "על מה השיחה?" says, as in any "הקלטה בלבד", and the call app's name
   (for example "Zoom") when the field is empty.
 - The coach is turned on by hand, as in any recording: same folder, same audio, same transcript.

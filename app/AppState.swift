@@ -395,13 +395,13 @@ final class AppState: ObservableObject {
     /// Every call starts recording and hearing me. A call with the coach starts with the AI chips of the last call
     /// that had it, a recording with none and folded to its strip; the transcript chip is as the last call left it.
     /// The start carries the sections of those chips, since a call with the coach can start without questions or terms.
-    /// A call the watch started for a call app starts with the panel hidden.
+    /// A call the watch started for a call app starts with the panel hidden, unless the panel was open already.
     func start(_ fields: StartFields, auto app: String? = nil) {
         let replay = ProcessInfo.processInfo.environment["CALLCOACH_REPLAY"]
         starting = true
         stoppedByWatch = false
         model.autoApp = app
-        model.visible = app == nil
+        model.visible = app == nil || idlePanel
         model.recordOnly = fields.recordOnly
         model.recentLines = []
         model.translations = [:]
